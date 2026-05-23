@@ -1,0 +1,46 @@
+[package]
+name         = "regit-daycount"
+version      = "1.0.0"
+edition      = "2024"
+rust-version = "1.85"
+license      = "Apache-2.0"
+description  = "Day-count fractions and business-day calendars in pure Rust — Act/360, Act/365F, ActAct ISDA, ActAct ICMA, 30/360, 30E/360, Bus/252; TARGET2, US, UK, JP, CH, HK, SG holiday calendars; all date-roll conventions. Zero dependencies, no_std, no alloc."
+repository   = "https://github.com/org-regit-io/regit-daycount"
+homepage     = "https://www.regit.io"
+authors      = ["Nicolas Koenig <nicolas.koenig@regit.io>"]
+keywords     = ["day-count", "calendar", "finance", "no-std", "isda"]
+categories   = ["finance", "no-std::no-alloc", "mathematics"]
+readme       = "README.md"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+[features]
+# `calendars` embeds dated snapshots of the major holiday calendars (TARGET2 as
+# a fixed-rule generator; US / UK / JP / CH / HK / SG as static, sorted holiday
+# tables). The data is pure — no_std-clean, no allocation — and is enabled by
+# default. Disable it for a minimal build that exposes only the date primitives,
+# day-count fractions, and date-roll conventions:
+#   cargo build --no-default-features
+default   = ["calendars"]
+calendars = []
+
+[dependencies]
+# Runtime dependencies: none. The crate is `no_std`, allocation-free, and
+# zero-dependency by design — see README.md and SPEC.md. Every day-count
+# fraction and date-roll convention is hand-rolled from its governing standard.
+
+[dev-dependencies]
+proptest  = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name    = "daycount"
+harness = false
+
+# The quickstart example is a guided end-to-end tour that uses every public
+# API — including the calendar layer. It therefore only builds with the
+# default `calendars` feature; under `--no-default-features` it is excluded.
+[[example]]
+name              = "quickstart"
+required-features = ["calendars"]

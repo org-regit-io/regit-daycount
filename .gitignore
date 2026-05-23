@@ -1,0 +1,30 @@
+# Rust build output
+/target/
+*.o
+*.so
+*.dylib
+
+# Lockfile — this is a library crate; the lockfile is not committed.
+Cargo.lock
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Internal docs, methodology, planning — never published to the public repo.
+/doc/
+
+# Scratch
+/q
+*.log
+logs/
+coverage/

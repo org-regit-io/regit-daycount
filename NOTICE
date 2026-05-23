@@ -1,0 +1,15 @@
+regit-daycount
+Copyright 2026 Regit.io — Nicolas Koenig
+
+Licensed under the Apache License, Version 2.0.
+
+This product is part of Regit OS, the operating system for investment products.
+https://www.regit.io
+
+The embedded holiday calendar tables (enabled by the default `calendars`
+feature) are dated snapshots derived from primary sources: the published
+calendars of NYSE / the Federal Reserve, the Bank of England, SIX Swiss
+Exchange, the Japan Exchange Group, the Hong Kong Exchanges and Clearing, and
+the Singapore Exchange; together with the ECB-defined fixed rule for TARGET2.
+Each table is factual reference data; the snapshot date is recorded in that
+file and in SPEC.md.

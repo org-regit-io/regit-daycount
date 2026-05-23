@@ -1,0 +1,7 @@
+[toolchain]
+channel    = "1.95.0"
+components = ["rustfmt", "clippy"]
+# wasm32-unknown-unknown        — WASM smoke build.
+# thumbv7em-none-eabi           — a genuine no_std target with no `std` at all;
+#                                 building for it proves the crate is no_std.
+targets    = ["wasm32-unknown-unknown", "thumbv7em-none-eabi"]
