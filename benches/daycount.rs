@@ -19,8 +19,9 @@
 //! | calendar::adjust (Following, 1 holiday)  | < 500 ns |
 //! | calendar::business_days_between (14 d)   | < 5 µs   |
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use regit_daycount::{Date, DayCount, Weekday, day_count, roll};
+use std::hint::black_box;
 
 #[cfg(feature = "calendars")]
 use regit_daycount::{Calendar, Roll, calendar};
