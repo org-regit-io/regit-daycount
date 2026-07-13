@@ -17,7 +17,7 @@ jobs:
     name: Quality Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Honour rust-toolchain.toml: installs the pinned channel (1.95.0)
       # with declared components and targets.
@@ -48,7 +48,7 @@ jobs:
     name: WASM build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: rustup show
@@ -62,7 +62,7 @@ jobs:
     name: no_std build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml declares targets = [..., "thumbv7em-none-eabi"];
       # thumbv7em-none-eabi has no `std` at all, so a successful build is a
