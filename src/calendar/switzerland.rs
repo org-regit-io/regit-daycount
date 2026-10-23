@@ -1,42 +1,37 @@
 // Copyright 2026 Regit.io — Nicolas Koenig
 // SPDX-License-Identifier: Apache-2.0
 
-//! Switzerland — SIX Swiss Exchange full-day trading closures.
+//! SIX Swiss Exchange full-day trading closures.
 //!
-//! This is the trading calendar, including Christmas Eve and New Year's
-//! Eve. Swiss banking/settlement calendars, including `QuantLib` Switzerland,
-//! leave those dates open and are not interchangeable.
-//! The named holidays are New Year's Day, Berchtoldstag, Good Friday,
-//! Easter Monday, Labour Day, Ascension, Whit Monday, National Day,
-//! Christmas Eve, Christmas Day, St Stephen's Day and New Year's Eve.
+//! This includes Christmas Eve and New Year's Eve; Swiss banking/settlement
+//! calendars are different. Weekend-only nominal holidays are omitted, and
+//! no weekday substitute is invented. Weekends are always non-business days.
+//! Complete official annual schedules were checked on 2026-10-23:
+//! - 2026: <https://www.six-group.com/en/market-data/news-tools/trading-currency-holiday-calendar.html>.
+//! - 2027: <https://www.six-group.com/dam/download/the-swiss-stock-exchange/trading/trading-provisions/regulation/trading-guides/trading-calendar-2027.pdf>.
 //!
-//! The table contains observed **weekday trading closures** only; nominal
-//! holidays on weekends are omitted and receive no weekday substitute.
-//! Both weekend dates remain non-business days through the weekend filter.
-//! This makes `is_holiday` a named trading-closure query rather than a
-//! separate inventory of every nominal public holiday.
-//!
-//! The 2020–2040 table was compared day by day, including raw named dates,
-//! against the independent `holidays==0.107` XSWX implementation on
-//! 2026-10-23. Its financial market source cites SIX annual trading guides.
-//! Unpublished future years remain projections, requiring explicit opt-in;
-//! independent library agreement does not establish official publication.
-//! Source mappings, hashes and full-window fixtures live in
-//! `validation/calendar_references.py` and `validation/oracle.json`.
-//!
-//! Primary trading calendar:
-//! <https://www.six-group.com/en/market-data/news-tools/trading-currency-holiday-calendar.html>.
-//! Independent financial reference:
-//! <https://github.com/vacanza/holidays/blob/v0.107/holidays/financial/six_swiss_exchange.py>.
+//! Other available years are unaudited historical rows or projections.
 
 use crate::date::Date;
+
+/// Complete primary-source verified annual horizon (inclusive).
+pub const VERIFIED_YEARS: (i32, i32) = (2026, 2027);
+/// Date the primary annual schedules were checked.
+pub const VERIFIED_ON: &str = "2026-10-23";
+
+/// Query a named holiday with verified market coverage.
+///
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::Switzerland)
+}
 
 /// Date of the SIX Swiss Exchange trading-calendar snapshot embedded in
 /// this module, `YYYY-MM-DD`.
 pub const SNAPSHOT_DATE: &str = "2026-10-23";
 
-/// Inclusive year range covered by [`HOLIDAYS`]: `(first_year, last_year)`.
-/// Queries outside this window return `false` from [`is_holiday`].
+/// Inclusive available year range. Checked queries reject dates outside it.
 pub const COVERAGE: (i32, i32) = (2020, 2040);
 
 /// The SIX Swiss Exchange holiday table, sorted ascending by
@@ -46,8 +41,9 @@ pub const COVERAGE: (i32, i32) = (2020, 2040);
 /// includes Christmas Eve and New Year's Eve, distinguishes SIX trading
 /// from Swiss banking settlement, and omits weekend-only nominal dates.
 /// Independent market mappings and the complete 2020–2040 comparison are
-/// recorded in `validation/calendar_references.py` and `validation/oracle.json`.
-pub const HOLIDAYS: &[(i32, u8, u8)] = &[
+/// recorded in `tests/modules/calendar.py` and generated validation evidence
+/// under `target/test-results/`.
+pub(crate) const HOLIDAYS: &[(i32, u8, u8)] = &[
     // 2020
     (2020, 1, 1),   // New Year's Day
     (2020, 1, 2),   // Saint Berchtold's Day
@@ -269,36 +265,7 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2040, 12, 31), // New Year's Eve
 ];
 
-/// Returns `true` if `date` is a SIX Swiss Exchange holiday under the
-/// embedded snapshot.
-///
-/// Implemented as a binary search over [`HOLIDAYS`], which is sorted
-/// ascending by `(year, month, day)`. Dates with `date.year()` outside
-/// [`COVERAGE`] return `false`: the snapshot does not extrapolate, and
-/// extending the horizon requires re-snapshotting the published SIX
-/// trading calendar.
-///
-/// Only observed weekday trading closures appear in the table. Weekend
-/// dates, including nominal public holidays, return `false` here and remain
-/// non-business through the caller's weekend predicate. SIX does not add a
-/// substitute weekday for a nominal holiday falling on a weekend.
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::calendar::switzerland;
-///
-/// // Christmas Eve 2026 (Thursday) is a full-day SIX trading closure.
-/// assert!(switzerland::is_holiday(Date::ymd(2026, 12, 24).unwrap()));
-///
-/// // The Sunday immediately after is not a SIX holiday — it is closed as
-/// // a weekend, but the weekend rule is the caller's job, not this
-/// // function's.
-/// assert!(!switzerland::is_holiday(Date::ymd(2026, 8, 2).unwrap()));
-/// ```
-#[must_use]
-pub fn is_holiday(date: Date) -> bool {
+pub(crate) fn is_holiday(date: Date) -> bool {
     let (first, last) = COVERAGE;
     let year = date.year();
     if year < first || year > last {
@@ -445,5 +412,37 @@ mod tests {
     fn trading_snapshot_has_all_reference_closures() {
         // Full-window independent XSWX named-date set, not 10 banking days/year.
         assert_eq!(HOLIDAYS.len(), 198);
+    }
+    // Complete primary schedules linked in the module documentation, checked
+    // 2026-10-23. This compares every date, including open days and weekends.
+    #[test]
+    fn complete_verified_schedules_match_primary_sources() {
+        let expected = &[
+            // 2026
+            (2026, 1, 1),
+            (2026, 1, 2),
+            (2026, 4, 3),
+            (2026, 4, 6),
+            (2026, 5, 1),
+            (2026, 5, 14),
+            (2026, 5, 25),
+            (2026, 12, 24),
+            (2026, 12, 25),
+            (2026, 12, 31),
+            // 2027
+            (2027, 1, 1),
+            (2027, 3, 26),
+            (2027, 3, 29),
+            (2027, 5, 6),
+            (2027, 5, 17),
+            (2027, 12, 24),
+            (2027, 12, 31),
+        ];
+        super::super::assert_verified_schedule(
+            super::super::Calendar::Switzerland,
+            2026,
+            2027,
+            expected,
+        );
     }
 }

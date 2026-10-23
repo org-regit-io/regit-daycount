@@ -12,12 +12,14 @@
 //! Easter Monday, Ascension and Whit Monday are Easter +1, +39 and +50 days;
 //! Good Friday is Easter −2. Fixed holidays are 1 January, 1 May, 9 May,
 //! 23 June, 15 August, 1 November, 25 December and 26 December. Europe Day
-//! was introduced in 2019. The unchecked legacy rule accepts earlier dates,
-//! but no historical banking-calendar validity is asserted for those dates.
+//! was introduced in 2019. Earlier historical banking-calendar rules are
+//! outside the available range.
 //! Checked coverage starts in 2019, with 2026–2027 independently verified.
 //! Outside that verified range a projection-policy opt-in is required.
 //!
 //! Primary sources read on 2026-10-23:
+//! - ABBL complete public and bank holiday schedules for 2026–2027:
+//!   <https://www.abbl.lu/professionals/public-and-bank-holidays/>.
 //! - Luxembourg government, legal holidays 2026–2027 and banking distinction:
 //!   <https://luxembourg.public.lu/fr/vivre/qualite-de-vie/jours-feries-legaux-luxembourg.html>.
 //! - Banque centrale du Luxembourg, opening days and Good Friday closure:
@@ -32,28 +34,20 @@
 
 use crate::date::Date;
 
-/// True if `date` is a Luxembourg full-day bank holiday.
+/// Complete primary-source verified annual horizon (inclusive).
+pub const VERIFIED_YEARS: (i32, i32) = (2026, 2027);
+/// Date the primary annual schedules were checked.
+pub const VERIFIED_ON: &str = "2026-10-23";
+
+/// Query a named holiday with verified market coverage.
 ///
-/// Includes Good Friday and the statutory public holidays. Christmas Eve's
-/// afternoon-only closure is not a full-day holiday. Dates are not shifted
-/// when they fall on weekends. Europe Day starts in 2019; no historical
-/// verification is implied by this permissive legacy predicate.
-/// Prefer [`super::try_is_holiday`] to enforce coverage and verification.
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::calendar::luxembourg;
-///
-/// // Luxembourg National Day (Grand Duke's official birthday) 2026.
-/// assert!(luxembourg::is_holiday(Date::ymd(2026, 6, 23).unwrap()));
-///
-/// // The Monday before is a regular business day.
-/// assert!(!luxembourg::is_holiday(Date::ymd(2026, 6, 22).unwrap()));
-/// ```
-#[must_use]
-pub fn is_holiday(date: Date) -> bool {
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::Luxembourg)
+}
+
+pub(crate) fn is_holiday(date: Date) -> bool {
     let year = date.year();
     let easter = Date::easter_sunday(year);
     let good_friday = easter.add_days(-2);
@@ -293,5 +287,44 @@ mod tests {
                 "Whit Monday {y} must be a Luxembourg holiday",
             );
         }
+    }
+    // Government complete 2026/2027 statutory dates plus its stated Good Friday bank rule.
+    // Complete primary schedules linked above, checked 2026-10-23.
+    #[test]
+    fn complete_luxembourg_schedules_match_primary_sources() {
+        let expected = &[
+            // 2026
+            (2026, 1, 1),
+            (2026, 4, 3),
+            (2026, 4, 6),
+            (2026, 5, 1),
+            (2026, 5, 9),
+            (2026, 5, 14),
+            (2026, 5, 25),
+            (2026, 6, 23),
+            (2026, 8, 15),
+            (2026, 11, 1),
+            (2026, 12, 25),
+            (2026, 12, 26),
+            // 2027
+            (2027, 1, 1),
+            (2027, 3, 26),
+            (2027, 3, 29),
+            (2027, 5, 1),
+            (2027, 5, 6),
+            (2027, 5, 9),
+            (2027, 5, 17),
+            (2027, 6, 23),
+            (2027, 8, 15),
+            (2027, 11, 1),
+            (2027, 12, 25),
+            (2027, 12, 26),
+        ];
+        super::super::assert_verified_schedule(
+            super::super::Calendar::Luxembourg,
+            2026,
+            2027,
+            expected,
+        );
     }
 }

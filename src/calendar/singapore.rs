@@ -23,21 +23,35 @@
 //! missing future table rows, the independent oracle executes actual future
 //! calendar calculations and rejects dates outside its stated bounds.
 //! Source hashes, mappings, and estimated-date metadata are retained in
-//! `validation/calendar_references.py` and `validation/oracle.json`.
+//! `tests/modules/calendar.py`; generated provenance is retained under
+//! `target/test-results/`.
 //!
 //! Independent financial reference:
 //! <https://github.com/vacanza/holidays/blob/v0.107/holidays/financial/singapore_exchange.py>.
-//! Official trading information: <https://www.sgx.com/stock-exchange/trading>.
+//! Official SGX securities trading policy explicitly follows the MOM holiday
+//! calendar: <https://www.sgx.com/securities/trading>.
+//! Derivatives contracts with separate holiday sessions are not represented.
 
 use crate::date::Date;
+
+/// Complete primary-source verified annual horizon (inclusive).
+pub const VERIFIED_YEARS: (i32, i32) = (2026, 2027);
+/// Date the primary annual schedules were checked.
+pub const VERIFIED_ON: &str = "2026-10-23";
+
+/// Query a named holiday with verified market coverage.
+///
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::Singapore)
+}
 
 /// Date of the SGX trading-calendar snapshot embedded in this module,
 /// `YYYY-MM-DD`.
 pub const SNAPSHOT_DATE: &str = "2026-10-23";
 
-/// Inclusive `(first_year, last_year)` coverage of [`HOLIDAYS`]. Dates
-/// outside this window cause [`is_holiday`] to return `false` without
-/// consulting the table.
+/// Inclusive available year range. Checked queries reject dates outside it.
 pub const COVERAGE: (i32, i32) = (2020, 2040);
 
 /// SGX trading-calendar holidays, sorted ascending by `(year, month,
@@ -52,7 +66,7 @@ pub const COVERAGE: (i32, i32) = (2020, 2040);
 /// for 2026–2027; the checked policy keeps that publication evidence
 /// separate from library agreement. See [`super::coverage`].
 #[rustfmt::skip]
-pub const HOLIDAYS: &[(i32, u8, u8)] = &[
+pub(crate) const HOLIDAYS: &[(i32, u8, u8)] = &[
     // 2020
     (2020, 1, 1), // New Year's Day
     (2020, 1, 25), // Chinese New Year
@@ -311,31 +325,7 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2040, 12, 25), // Christmas Day
 ];
 
-/// True if `date` is an SGX-published trading-calendar holiday inside the
-/// snapshot's [`COVERAGE`] window.
-///
-/// The lookup is a binary search over [`HOLIDAYS`], which is sorted
-/// ascending by `(year, month, day)`. Dates outside [`COVERAGE`] return
-/// `false` without consulting the table — refresh the snapshot before
-/// classifying dates past the horizon. Weekends are *not* classified
-/// here; SGX is already closed on Saturday and Sunday and that is the
-/// caller's business-day predicate to express.
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::calendar::singapore;
-///
-/// // National Day 2024 (Friday) is an SGX holiday.
-/// assert!(singapore::is_holiday(Date::ymd(2024, 8, 9).unwrap()));
-///
-/// // 2024-08-10 is a Saturday — weekends are not classified by
-/// // `is_holiday`, only by the caller's business-day predicate.
-/// assert!(!singapore::is_holiday(Date::ymd(2024, 8, 10).unwrap()));
-/// ```
-#[must_use]
-pub fn is_holiday(date: Date) -> bool {
+pub(crate) fn is_holiday(date: Date) -> bool {
     let (first, last) = COVERAGE;
     let year = date.year();
     if year < first || year > last {
@@ -437,5 +427,42 @@ mod tests {
                 "no SGX holiday rows for year {year}",
             );
         }
+    }
+    // MOM complete 2026/2027 gazette, with Sunday observations; SGX securities policy follows MOM.
+    // Complete primary schedules linked above, checked 2026-10-23.
+    #[test]
+    fn complete_singapore_schedules_match_primary_sources() {
+        let expected = &[
+            // 2026
+            (2026, 1, 1),
+            (2026, 2, 17),
+            (2026, 2, 18),
+            (2026, 3, 21),
+            (2026, 4, 3),
+            (2026, 5, 1),
+            (2026, 5, 27),
+            (2026, 6, 1),
+            (2026, 8, 10),
+            (2026, 11, 9),
+            (2026, 12, 25),
+            // 2027
+            (2027, 1, 1),
+            (2027, 2, 6),
+            (2027, 2, 8),
+            (2027, 3, 10),
+            (2027, 3, 26),
+            (2027, 5, 1),
+            (2027, 5, 17),
+            (2027, 5, 20),
+            (2027, 8, 9),
+            (2027, 10, 28),
+            (2027, 12, 25),
+        ];
+        super::super::assert_verified_schedule(
+            super::super::Calendar::Singapore,
+            2026,
+            2027,
+            expected,
+        );
     }
 }

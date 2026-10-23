@@ -3,13 +3,10 @@
 
 //! 30/360 Bond Basis — ISDA 2006 §4.16(f).
 //!
-//! 30/360 Bond Basis is the US bond-market default: every month is treated
-//! as 30 days long and every year as 360 days, with two specific
-//! day-of-month adjustments applied to the endpoints before differencing.
-//! The convention underpins coupon accrual on US Treasury notes and
-//! bonds, US agency debt, and most US corporate fixed-rate bonds; it is
-//! also the historic basis for the swap-leg "30/360" tag in pre-ISDA
-//! confirmations.
+//! Every month is treated as 30 days long and every year as 360 days,
+//! with two endpoint adjustments. This is the ISDA Bond Basis algorithm,
+//! distinct from US/NASD variants with additional February-end rules.
+//! The governing contract determines which convention applies.
 //!
 //! # Algorithm
 //!
@@ -26,7 +23,7 @@
 //!
 //! All endpoint arithmetic is performed in `i32`; the cast to `f64`
 //! happens only at the final division. The numerator is signed, so an
-//! inverted interval (`end < start`) yields a negative fraction.
+//! inverted interval (`end < start`) yields a nonpositive fraction.
 //!
 //! # `BondBasis` vs 30E/360
 //!
@@ -109,12 +106,7 @@ pub fn fraction(start: Date, end: Date) -> f64 {
 mod tests {
     use super::*;
 
-    // The tolerance 1e-12 is the working slack used throughout this crate's
-    // numeric assertions: it is loose enough that a benign last-bit rounding
-    // never causes a spurious failure, and tight enough that any drift large
-    // enough to mis-state a cashflow at the cent level (≥ 1e-9 on a unit
-    // notional) is caught immediately. We deliberately do not assert against
-    // `f64::EPSILON`; the goal is auditable, not maximally-tight.
+    // Absolute year-fraction tolerance for these worked examples.
     const TOL: f64 = 1e-12;
 
     // ─── 6-month mid-month — no adjustments ──────────────────────────────
@@ -207,8 +199,9 @@ mod tests {
 
     #[test]
     fn bond_basis_inverted_is_negative() {
-        // The crate does not reject `end < start`; the BondBasis numerator
-        // is signed, so the fraction is the negation of the forward case.
+        // For these mid-month endpoints no adjustment fires, so exchanging
+        // the endpoints negates the fraction. Bond Basis is not generally
+        // antisymmetric because its end adjustment depends on its start.
         let start = Date::ymd(2026, 1, 15).unwrap();
         let end = Date::ymd(2026, 7, 15).unwrap();
         let forward = fraction(start, end);
@@ -232,5 +225,13 @@ mod tests {
         let end = Date::ymd(2026, 8, 28).unwrap();
         let f = fraction(start, end);
         assert!((f - 0.5).abs() < TOL);
+    }
+
+    #[test]
+    fn endpoint_conditional_adjustment_is_not_generally_antisymmetric() {
+        let start = Date::ymd(2026, 1, 15).unwrap();
+        let end = Date::ymd(2026, 7, 31).unwrap();
+        assert!((fraction(start, end) - 196.0 / 360.0).abs() < TOL);
+        assert!((fraction(end, start) + 195.0 / 360.0).abs() < TOL);
     }
 }

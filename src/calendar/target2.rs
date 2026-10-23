@@ -12,9 +12,8 @@
 //! Central Bank fixes exactly six closing dates per year, derivable from
 //! the year alone. The standing six-day rule applies from 2002 until
 //! further notice. Checked APIs reject earlier dates and require projection
-//! opt-in after the currently verified 2028 horizon. The legacy predicate
-//! mechanically applies the modern rule to every `Date` year; that does
-//! not make it a historical calendar before 2002.
+//! opt-in after the currently verified 2028 horizon. Earlier historical
+//! TARGET calendars are outside the available range.
 //!
 //! The six closing dates are:
 //!
@@ -78,34 +77,24 @@
 //! - Current published 2026–2028 dates marked as TARGET closing days:
 //!   <https://www.bankingsupervision.europa.eu/services/contacts/working-hours/html/index.en.html>.
 //! - Jean Meeus, *Astronomical Algorithms*, 2nd ed., Willmann-Bell, 1998,
-//!   §8 "The date of Easter" — the Computus used by [`Date::easter_sunday`].
+//!   §8 "The date of Easter" — the Computus used by `Date::easter_sunday`.
 
 use crate::date::Date;
 
-/// True if `date` matches a modern TARGET euro-settlement closing day.
+/// Complete primary-source verified annual horizon (inclusive).
+pub const VERIFIED_YEARS: (i32, i32) = (2002, 2028);
+/// Date the ECB standing rule and current annual schedules were checked.
+pub const VERIFIED_ON: &str = "2026-10-23";
+
+/// Query a named holiday with verified market coverage.
 ///
-/// This permissive legacy generator applies the six-day rule mechanically
-/// at any year; use [`super::try_is_holiday`] to enforce its 2002 start
-/// and verified horizon. It is not a historical calendar before 2002.
-///
-/// Weekends are NOT classified as holidays here — they are handled by the
-/// caller's business-day predicate (see the `is_business_day` dispatcher
-/// in [`crate::calendar`]).
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::calendar::target2;
-///
-/// // Christmas Day 2026 is a TARGET2 holiday.
-/// assert!(target2::is_holiday(Date::ymd(2026, 12, 25).unwrap()));
-///
-/// // A regular Wednesday is not.
-/// assert!(!target2::is_holiday(Date::ymd(2026, 5, 20).unwrap()));
-/// ```
-#[must_use]
-pub fn is_holiday(date: Date) -> bool {
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::Target2)
+}
+
+pub(crate) fn is_holiday(date: Date) -> bool {
     let year = date.year();
     let easter = Date::easter_sunday(year);
     let good_friday = easter.add_days(-2);
@@ -271,5 +260,39 @@ mod tests {
                 "Easter Monday {y} must be a TARGET2 holiday",
             );
         }
+    }
+    // ECB published 2026-2028 TARGET-starred closing dates; historical coverage is the 2002 standing rule.
+    // Complete primary schedules linked above, checked 2026-10-23.
+    #[test]
+    fn complete_target2_schedules_match_primary_sources() {
+        let expected = &[
+            // 2026
+            (2026, 1, 1),
+            (2026, 4, 3),
+            (2026, 4, 6),
+            (2026, 5, 1),
+            (2026, 12, 25),
+            (2026, 12, 26),
+            // 2027
+            (2027, 1, 1),
+            (2027, 3, 26),
+            (2027, 3, 29),
+            (2027, 5, 1),
+            (2027, 12, 25),
+            (2027, 12, 26),
+            // 2028
+            (2028, 1, 1),
+            (2028, 4, 14),
+            (2028, 4, 17),
+            (2028, 5, 1),
+            (2028, 12, 25),
+            (2028, 12, 26),
+        ];
+        super::super::assert_verified_schedule(
+            super::super::Calendar::Target2,
+            2026,
+            2028,
+            expected,
+        );
     }
 }

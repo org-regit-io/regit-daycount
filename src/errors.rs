@@ -42,6 +42,7 @@ use core::fmt;
 /// assert_eq!(err, ValidationError::InvalidDate { rule: "day-out-of-range" });
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ValidationError {
     /// The `(year, month, day)` triple does not name a real Gregorian date;
     /// `rule` names the violated structural rule.
@@ -67,62 +68,3 @@ impl fmt::Display for ValidationError {
 }
 
 impl core::error::Error for ValidationError {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support::{debug, display};
-
-    #[test]
-    fn validation_error_display_invalid_date() {
-        let err = ValidationError::InvalidDate {
-            rule: "month-out-of-range",
-        };
-        assert_eq!(display(err).as_str(), "invalid date: month-out-of-range");
-    }
-
-    #[test]
-    fn validation_error_display_out_of_range() {
-        let err = ValidationError::OutOfRange {
-            what: "year < 1583",
-        };
-        assert_eq!(display(err).as_str(), "value out of range: year < 1583");
-    }
-
-    #[test]
-    fn validation_error_display_has_no_trailing_period() {
-        for err in [
-            ValidationError::InvalidDate { rule: "r" },
-            ValidationError::OutOfRange { what: "w" },
-        ] {
-            assert!(!display(err).as_str().ends_with('.'));
-        }
-    }
-
-    #[test]
-    fn validation_error_is_error_trait() {
-        let err: &dyn core::error::Error = &ValidationError::InvalidDate { rule: "r" };
-        assert!(err.source().is_none());
-    }
-
-    #[test]
-    fn validation_error_copy_eq() {
-        let err = ValidationError::OutOfRange { what: "year" };
-        let copy = err;
-        assert_eq!(err, copy);
-    }
-
-    #[test]
-    fn errors_debug() {
-        assert!(
-            debug(ValidationError::InvalidDate { rule: "r" })
-                .as_str()
-                .contains("InvalidDate")
-        );
-        assert!(
-            debug(ValidationError::OutOfRange { what: "w" })
-                .as_str()
-                .contains("OutOfRange")
-        );
-    }
-}

@@ -8,7 +8,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Caller-facing API and behavior changes are recorded with each release.
 
+## [2.0.0] - 2026-10-23
+
+### Breaking public contract
+
+- Remove NaN-returning dispatchers and legacy ICMA/Act365L wrappers. Checked
+  day-count functions require explicit contractual context and return errors.
+- Remove public permissive calendar lookups and partial-result walks. Every
+  market query and operation checks coverage; verified data remains the default.
+- Make unchecked Date construction internal. Add const validated construction
+  and fallible day/month/Easter arithmetic; preserve the supported Date domain.
+- Replace permissive custom rolls with `roll::try_apply` and `RollError`.
+- Make extensible enums non-exhaustive. Remove the ambiguous legacy US alias.
+- Reject empty composite calendars during construction.
+- Count business days over `[start, end)` without requiring data for the
+  exclusive end. Empty or reversed unsigned counts validate both endpoints
+  before returning zero; Bus/252 normalizes reversed endpoints and negates
+  the forward count. Zero business-day additions roll Following.
+- Modified rolls determine fallback within the original month before
+  querying an unavailable following or preceding month.
+
+### Calendar evidence
+
+- Audit complete primary-source UK, JPX, SIX and HKEX schedules and record
+  verification metadata per calendar.
+- Add the explicit BrazilB3 listed-market calendar for the official 2026 scope.
+- Publish verified horizons explicitly: TARGET2 2002–2028 under its standing
+  rule; UK 2020–2028; NYSE 2026–2028; Federal Reserve 2026–2030; Luxembourg,
+  JPX, SIX, HKEX and Singapore 2026–2027; B3 2026 only. Available unverified
+  years require explicit `AllowProjected` opt-in.
+
+### Independent validation
+
+- Use one Python entry point, `tests/run.py`, with domain modules in
+  `tests/modules/` and the standalone Rust executable in `tests/test.rs`.
+  Independent Python references and Rust computations execute as separate
+  processes; the launcher compares their observations in both feature modes.
+- Cover runtime results, typed errors and payloads, coverage policies,
+  boundaries, walk limits, public constants/metadata and trait behavior.
+  Compiler probes and a compiler-derived public API inventory check the
+  downstream contract and reject an added public function without evidence.
+- Generate comparison evidence under ignored `target/test-results/`; remove
+  committed fixtures and Rust adapters from the Python module directory.
+- Pin current stable reference packages, including python-dateutil 3.0.0,
+  NumPy 2.5.4, Numba 0.68.0, llvmlite 0.50.0 and SciPy 1.18.1. Explicit uv
+  overrides bypass older FinancePy and holidays dependency bounds; unused
+  pandas and Matplotlib are excluded. FinancePy 1.1.2 source hashes are retained.
+- Record 100% instrumented production-function coverage and 98.7% production-line
+  coverage from independent inputs. This does not establish exhaustive path
+  coverage or primary-source verification for projected calendar years.
+
+### Repository
+
+- Keep production modules and their unit tests in `src/`; independent
+  validation lives in `tests/`.
+- Remove standalone examples, benchmark infrastructure and Criterion. Keep
+  runnable usage in README/rustdoc and independent validation under `tests/`.
+- Add public compatibility checks to the release gate. Version 1.1.0 introduced
+  breaking changes without a major version; its passing numerical checks did
+  not establish public API compatibility.
+
 ## [1.1.0] - 2026-10-23
+
+Historical 1.x release record. Its legacy API, retained-fixture layout and
+verification claims are superseded by the 2.0 contract and validation above.
 
 Correctness hardening with explicit calculation context and independent
 reference coverage. The production crate remains pure Rust, `no_std`,
@@ -93,7 +156,7 @@ allocation free and free of runtime dependencies.
 
 The original release description below is retained as history. Its blanket
 verification and historical calendar assurances are superseded by the
-corrections and coverage contract in 1.1.0.
+corrections in 1.1.0 and the coverage contract in 2.0.0.
 
 First public release. The crate is `#![no_std]`, allocation-free, and has
 zero runtime dependencies; every day-count fraction, date-roll convention,
@@ -315,6 +378,7 @@ astronomically- or rule-derived projections.
 - **~10,000 lines** of library Rust (`src/`), **~1,800 lines** of
   example, benchmark, and integration tests.
 
+[2.0.0]: https://github.com/org-regit-io/regit-daycount/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/org-regit-io/regit-daycount/releases/tag/v1.1.0
 [1.0.1]: https://github.com/org-regit-io/regit-daycount/releases/tag/v1.0.1
 [1.0.0]: https://github.com/org-regit-io/regit-daycount/releases/tag/v1.0.0

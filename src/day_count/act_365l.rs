@@ -21,16 +21,6 @@ use crate::date::Date;
 
 use super::{CouponPeriod, DayCountError};
 
-/// Legacy context-free entry point.
-///
-/// Act/365L needs a coupon frequency and next coupon date. This signature
-/// cannot supply them and returns `NaN`; use [`try_fraction`] or
-/// [`super::year_fraction_with_freq`] with explicit coupon context.
-#[must_use]
-pub fn fraction(_start: Date, _end: Date) -> f64 {
-    f64::NAN
-}
-
 /// Computes Act/365L using the reference coupon period and frequency.
 ///
 /// Annual frequency uses leap-day membership in `(min(start, end), ref_end]`.
@@ -107,12 +97,6 @@ mod tests {
         let reverse = try_fraction(end, start, rs, re, freq).unwrap();
         assert!((forward - expected).abs() < 1e-12);
         assert!((reverse + expected).abs() < 1e-12);
-    }
-
-    #[test]
-    fn context_free_entry_cannot_invent_coupon_schedule() {
-        assert!(fraction(d(2024, 1, 1), d(2024, 4, 1)).is_nan());
-        assert!(fraction(d(2024, 1, 1), d(2024, 1, 1)).is_nan());
     }
 
     #[test]

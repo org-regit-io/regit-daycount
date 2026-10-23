@@ -1,73 +1,26 @@
 // Copyright 2026 Regit.io — Nicolas Koenig
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bus/252 — Brazilian business-day convention (ANBIMA / B3).
+//! Bus/252: the signed business-day count divided by 252.
 //!
-//! Bus/252 is the day-count fraction used for almost every BRL-denominated
-//! fixed-income instrument: federal CDI / Selic-indexed notes, ANBIMA
-//! reference yields, B3-listed DI futures, and the corporate debentures
-//! priced off them. The numerator is the count of **business days** in the
-//! half-open interval `[start, end)` under the caller-supplied calendar; the
-//! denominator is the fixed constant 252 — the conventional Brazilian
-//! business-year length (roughly 365 calendar days minus 104 weekend days
-//! minus the federal / state holidays B3 observes).
+//! The caller supplies a complete business-day predicate for the interval.
+//! This module has no market-calendar default: the calendar must match the
+//! instrument's contractual terms. With the `calendars` feature, the calendar
+//! module offers coverage-checked Bus/252 calculation for named markets.
 //!
-//! # API shape — closure predicate
+//! Forward accruals count dates in `[start, end)`. Reversed accruals negate
+//! the count over `[end, start)`, including when an endpoint is a holiday.
+//! This normalized reverse policy can differ by one business day from a
+//! reference library that traverses backwards with different inclusivity.
+//! Equal dates return zero without querying the predicate.
 //!
-//! Every other fraction in this crate has the signature `fn fraction(start:
-//! Date, end: Date) -> f64`. Bus/252 cannot — by definition it needs to know
-//! which dates are business days, and that knowledge lives in
-//! `crate::calendar`. Importing `calendar` here would close the cycle
-//! `day_count::bus_252 → calendar → day_count` (calendars compose with
-//! year-fraction queries through the dispatcher), so the signature instead
-//! takes a caller-supplied `is_business_day: impl Fn(Date) -> bool`
-//! predicate. In practice the caller passes `|d| calendar::is_business_day
-//! (d, cal)` for their chosen `cal`; `bus_252` itself just counts.
+//! The walk is bounded by the valid date endpoints. Every increment remains
+//! within their range. Predicate errors cannot be represented by `bool`;
+//! callers with fallible calendar queries should use the checked calendar
+//! calculation rather than converting unknown dates to business days.
 //!
-//! This is the same pattern [`crate::roll::apply`] uses for the same
-//! reason — see `roll.rs` for the canonical statement.
-//!
-//! # Algorithm
-//!
-//! ```text
-//! For start <= end:
-//!     count = number of dates d with start <= d < end and is_business_day(d)
-//!     return count as f64 / 252.0
-//! For start > end:
-//!     return -fraction(end, start, is_business_day)
-//! ```
-//!
-//! The walk is one day at a time. Valid date endpoints bound its length;
-//! no arbitrary horizon truncates the business-day count.
-//!
-//! # Signed intervals and reference APIs
-//!
-//! Reversed accruals negate the count over the normalized `[lower, upper)`
-//! interval, including when an endpoint is not a business day. The Python
-//! oracle executes `QuantLib`'s `Business252` on those ordered endpoints and
-//! applies the explicit signed-interval policy to the reference result.
-//! `QuantLib`'s direct reverse call instead includes the supplied start and
-//! excludes the supplied end when walking backward, so it can differ by one
-//! business day. Reference inputs and their orientation mapping are retained
-//! in the oracle manifest rather than silently assumed interchangeable.
-//!
-//! # Worked example
-//!
-//! ```text
-//! start = 2026-05-01 (Fri), end = 2026-05-15 (Fri), weekends-only calendar
-//! business days in [2026-05-01, 2026-05-15):
-//!     May 1 Fri, 4 Mon, 5 Tue, 6 Wed, 7 Thu, 8 Fri,
-//!     11 Mon, 12 Tue, 13 Wed, 14 Thu = 10 days
-//! f = 10 / 252 = 0.039682539682540
-//! ```
-//!
-//! # References
-//!
-//! - ANBIMA, *Caderno de Fórmulas — Títulos Públicos Federais*
-//!   (Bus/252 numerator definition for LTN, NTN-B, NTN-F).
-//! - B3, *Manual de Apreçamento — Derivativos de Renda Fixa*
-//!   (Bus/252 denominator = 252 for DI futures).
-//! - [`QuantLib` v1.44 reverse endpoint handling](https://github.com/lballabio/QuantLib/blob/v1.44/ql/time/calendar.cpp).
+//! References: ANBIMA, *Caderno de Fórmulas — Títulos Públicos Federais*;
+//! B3, *Manual de Apreçamento — Derivativos de Renda Fixa*.
 
 use crate::date::Date;
 
@@ -76,8 +29,9 @@ use crate::date::Date;
 /// The numerator is the count of `d` with `start <= d < end` (or
 /// `end <= d < start` for an inverted interval, with the sign flipped)
 /// satisfying `is_business_day(d)`; the denominator is the constant 252.
-/// See the module-level docstring for the full algorithm, the rationale for
-/// the closure-predicate signature, and the worked example.
+/// The predicate must be defined for every queried date and use the
+/// instrument's contractual calendar. See the module documentation for
+/// endpoint inclusivity and the reversed-interval policy.
 ///
 /// # Examples
 ///
@@ -126,12 +80,7 @@ mod tests {
     use super::*;
     use crate::date::Weekday;
 
-    // The tolerance 1e-12 is the working slack used throughout this crate's
-    // numeric assertions: it is loose enough that a benign last-bit rounding
-    // never causes a spurious failure, and tight enough that any drift large
-    // enough to mis-state a cashflow at the cent level (≥ 1e-9 on a unit
-    // notional) is caught immediately. We deliberately do not assert against
-    // `f64::EPSILON`; the goal is auditable, not maximally-tight.
+    // Absolute year-fraction tolerance for these worked examples.
     const TOL: f64 = 1e-12;
 
     /// Weekend-only predicate: Saturday and Sunday are not business days.
@@ -243,5 +192,32 @@ mod tests {
         let end = Date::ymd(2026, 12, 26).unwrap();
         let f = fraction(start, end, weekends_plus_christmas);
         assert!((f - 4.0_f64 / 252.0).abs() < TOL);
+    }
+
+    #[test]
+    fn endpoint_membership_and_reverse_orientation_are_explicit() {
+        let friday = Date::ymd(2026, 9, 4).unwrap();
+        let saturday = Date::ymd(2026, 9, 5).unwrap();
+        // Friday is included, Saturday excluded, in either orientation.
+        assert!((fraction(friday, saturday, weekends_only) - 1.0 / 252.0).abs() < TOL);
+        assert!((fraction(saturday, friday, weekends_only) + 1.0 / 252.0).abs() < TOL);
+    }
+
+    #[test]
+    fn valid_boundary_dates_never_require_an_out_of_domain_step() {
+        let first = Date::ymd(1583, 1, 1).unwrap();
+        let first_next = Date::ymd(1583, 1, 2).unwrap();
+        let last_prior = Date::ymd(9999, 12, 30).unwrap();
+        let last = Date::ymd(9999, 12, 31).unwrap();
+        for (start, end) in [(first, first_next), (last_prior, last)] {
+            assert!((fraction(start, end, |_| true) - 1.0 / 252.0).abs() < TOL);
+        }
+        assert!(
+            fraction(last, last, |_| panic!(
+                "empty interval must not query predicate"
+            ))
+            .abs()
+                < TOL
+        );
     }
 }

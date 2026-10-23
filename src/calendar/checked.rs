@@ -10,6 +10,7 @@ use core::fmt;
 /// Whether checked operations may use data without complete primary-source
 /// verification. `AllowProjected` includes unverified historical rows as well
 /// as future projections; it does not extend the available date range.
+#[non_exhaustive]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoveragePolicy {
     /// Require the verified range returned by [`coverage`].
@@ -34,44 +35,76 @@ pub struct CalendarCoverage {
     pub verified_on: Option<&'static str>,
 }
 
-/// Returns availability and verification metadata for a named calendar.
-///
-/// Verified NYSE years are 2026–2028; Federal Reserve 2026–2030;
-/// Luxembourg and Singapore 2026–2027. Other static tables currently have
-/// no complete independently audited year and require projection opt-in.
-/// TARGET's standing six-day closure rule is effective from 2002 and has
-/// been checked against the ECB decision and current 2026–2028 calendars.
-/// Later rule-generated dates require projection opt-in.
+/// Returns each market's available years and complete primary-source verified
+/// annual horizon. Unpublished future years and unaudited history require
+/// explicit [`CoveragePolicy::AllowProjected`] opt-in. B3 provides only 2026.
 #[must_use]
 pub const fn coverage(cal: Calendar) -> CalendarCoverage {
-    let available_years = match cal {
-        Calendar::Target2 => (2002, Date::MAX_YEAR),
-        Calendar::Luxembourg => (2019, Date::MAX_YEAR),
-        _ => (2020, 2040),
+    use super::{
+        brazil, hong_kong, japan, luxembourg, singapore, switzerland, target2, united_kingdom,
+        united_states,
     };
-    let verified_years = match cal {
-        Calendar::Target2 => Some((2002, 2028)),
-        Calendar::UnitedStates | Calendar::UnitedStatesNyse => Some((2026, 2028)),
-        Calendar::UnitedStatesFederalReserve => Some((2026, 2030)),
-        Calendar::Luxembourg | Calendar::Singapore => Some((2026, 2027)),
-        _ => None,
+    let (available_years, verified_years, verified_on) = match cal {
+        Calendar::Target2 => (
+            (2002, Date::MAX_YEAR),
+            target2::VERIFIED_YEARS,
+            target2::VERIFIED_ON,
+        ),
+        Calendar::Luxembourg => (
+            (2019, Date::MAX_YEAR),
+            luxembourg::VERIFIED_YEARS,
+            luxembourg::VERIFIED_ON,
+        ),
+        Calendar::UnitedStatesNyse => (
+            united_states::COVERAGE,
+            united_states::NYSE_VERIFIED_YEARS,
+            united_states::NYSE_VERIFIED_ON,
+        ),
+        Calendar::UnitedStatesFederalReserve => (
+            united_states::COVERAGE,
+            united_states::FEDERAL_RESERVE_VERIFIED_YEARS,
+            united_states::FEDERAL_RESERVE_VERIFIED_ON,
+        ),
+        Calendar::UnitedKingdom => (
+            united_kingdom::COVERAGE,
+            united_kingdom::VERIFIED_YEARS,
+            united_kingdom::VERIFIED_ON,
+        ),
+        Calendar::Japan => (japan::COVERAGE, japan::VERIFIED_YEARS, japan::VERIFIED_ON),
+        Calendar::Switzerland => (
+            switzerland::COVERAGE,
+            switzerland::VERIFIED_YEARS,
+            switzerland::VERIFIED_ON,
+        ),
+        Calendar::HongKong => (
+            hong_kong::COVERAGE,
+            hong_kong::VERIFIED_YEARS,
+            hong_kong::VERIFIED_ON,
+        ),
+        Calendar::Singapore => (
+            singapore::COVERAGE,
+            singapore::VERIFIED_YEARS,
+            singapore::VERIFIED_ON,
+        ),
+        Calendar::BrazilB3 => (
+            brazil::COVERAGE,
+            brazil::VERIFIED_YEARS,
+            brazil::VERIFIED_ON,
+        ),
     };
     CalendarCoverage {
         available_years,
-        verified_years,
-        verified_on: if verified_years.is_some() {
-            Some("2026-10-23")
-        } else {
-            None
-        },
+        verified_years: Some(verified_years),
+        verified_on: Some(verified_on),
     }
 }
 
 /// A checked calendar query or walk could not determine a reliable result.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalendarError {
-    /// The supplied value is not a validated date in the supported date domain.
-    InvalidDate { date: Date },
+    /// At least one named market is required to construct a composite.
+    EmptyComposite,
     /// The calendar has no supported data/rule for the requested date.
     OutOfCoverage { calendar: Calendar, date: Date },
     /// Data exists, but its year has not been verified under the requested policy.
@@ -85,7 +118,9 @@ pub enum CalendarError {
 impl fmt::Display for CalendarError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidDate { date } => write!(f, "invalid calendar date: {date:?}"),
+            Self::EmptyComposite => {
+                f.write_str("a composite calendar requires at least one market")
+            }
             Self::OutOfCoverage { calendar, date } => {
                 write!(f, "{calendar:?} has no coverage for {date:?}")
             }
@@ -107,14 +142,7 @@ impl core::error::Error for CalendarError {}
 pub const CALENDAR_MAX_STEPS: u32 = 365 * 200;
 const ROLL_MAX_STEPS: u32 = 366;
 
-fn validate(date: Date) -> Result<(), CalendarError> {
-    Date::ymd(date.year(), date.month(), date.day())
-        .map(|_| ())
-        .map_err(|_| CalendarError::InvalidDate { date })
-}
-
 fn ensure_coverage(date: Date, cal: Calendar, policy: CoveragePolicy) -> Result<(), CalendarError> {
-    validate(date)?;
     let horizon = coverage(cal);
     if date.year() < horizon.available_years.0 || date.year() > horizon.available_years.1 {
         return Err(CalendarError::OutOfCoverage {
@@ -136,23 +164,14 @@ fn ensure_coverage(date: Date, cal: Calendar, policy: CoveragePolicy) -> Result<
 }
 
 fn step(date: Date, direction: i32) -> Result<Date, CalendarError> {
-    if (direction > 0 && date == Date::ymd_unchecked(Date::MAX_YEAR, 12, 31))
-        || (direction < 0 && date == Date::ymd_unchecked(Date::MIN_YEAR, 1, 1))
-    {
-        return Err(CalendarError::DateBoundary { date });
-    }
-    let next = date.add_days(direction);
-    if next == date || (direction > 0 && next < date) || (direction < 0 && next > date) {
-        return Err(CalendarError::DateBoundary { date });
-    }
-    validate(next).map_err(|_| CalendarError::DateBoundary { date })?;
-    Ok(next)
+    date.try_add_days(direction)
+        .map_err(|_| CalendarError::DateBoundary { date })
 }
 
 /// Checked holiday query using verified data only.
 ///
 /// # Errors
-/// Returns an error for invalid, unsupported, or unverified dates.
+/// Returns an error for unsupported or unverified dates.
 pub fn try_is_holiday(date: Date, cal: Calendar) -> Result<bool, CalendarError> {
     try_is_holiday_with_policy(date, cal, CoveragePolicy::VerifiedOnly)
 }
@@ -160,7 +179,7 @@ pub fn try_is_holiday(date: Date, cal: Calendar) -> Result<bool, CalendarError> 
 /// Checked holiday query with explicit data policy.
 ///
 /// # Errors
-/// Returns an error for invalid dates or dates outside the selected coverage.
+/// Returns an error for dates outside the selected coverage.
 pub fn try_is_holiday_with_policy(
     date: Date,
     cal: Calendar,
@@ -174,7 +193,7 @@ pub fn try_is_holiday_with_policy(
 /// even on weekends, so an unknown Saturday does not disguise missing data.
 ///
 /// # Errors
-/// Returns an error for invalid, unsupported, or unverified dates.
+/// Returns an error for unsupported or unverified dates.
 pub fn try_is_business_day(date: Date, cal: Calendar) -> Result<bool, CalendarError> {
     try_is_business_day_with_policy(date, cal, CoveragePolicy::VerifiedOnly)
 }
@@ -182,7 +201,7 @@ pub fn try_is_business_day(date: Date, cal: Calendar) -> Result<bool, CalendarEr
 /// Checked business-day query with explicit data policy.
 ///
 /// # Errors
-/// Returns an error for invalid dates or dates outside the selected coverage.
+/// Returns an error for dates outside the selected coverage.
 pub fn try_is_business_day_with_policy(
     date: Date,
     cal: Calendar,
@@ -212,6 +231,28 @@ fn walk(
     })
 }
 
+// Modified rolls need only determine whether a business day exists inside
+// the original month. Crossing that boundary already selects the fallback;
+// no lookup in an irrelevant (possibly unavailable) next month is required.
+fn walk_within_month(
+    date: Date,
+    direction: i32,
+    predicate: &impl Fn(Date) -> Result<bool, CalendarError>,
+) -> Result<Option<Date>, CalendarError> {
+    let mut current = date;
+    loop {
+        if predicate(current)? {
+            return Ok(Some(current));
+        }
+        if (direction > 0 && current.day() == Date::days_in_month(current.year(), current.month()))
+            || (direction < 0 && current.day() == 1)
+        {
+            return Ok(None);
+        }
+        current = step(current, direction)?;
+    }
+}
+
 pub(super) fn adjust_with_predicate(
     date: Date,
     conv: Roll,
@@ -224,18 +265,15 @@ pub(super) fn adjust_with_predicate(
         Roll::Following => walk(date, 1, &predicate),
         Roll::Preceding => walk(date, -1, &predicate),
         Roll::ModifiedFollowing | Roll::EndOfMonth => {
-            // EndOfMonth is the same operation on a standalone date as the
-            // legacy API: a last business day is preserved, otherwise use MF.
-            let following = walk(date, 1, &predicate)?;
-            if following.month() == date.month() && following.year() == date.year() {
+            // EndOfMonth on a standalone date uses ModifiedFollowing.
+            if let Some(following) = walk_within_month(date, 1, &predicate)? {
                 Ok(following)
             } else {
                 walk(date, -1, &predicate)
             }
         }
         Roll::ModifiedPreceding => {
-            let preceding = walk(date, -1, &predicate)?;
-            if preceding.month() == date.month() && preceding.year() == date.year() {
+            if let Some(preceding) = walk_within_month(date, -1, &predicate)? {
                 Ok(preceding)
             } else {
                 walk(date, 1, &predicate)
@@ -272,8 +310,8 @@ pub fn try_adjust(date: Date, conv: Roll, cal: Calendar) -> Result<Date, Calenda
     try_adjust_with_policy(date, conv, cal, CoveragePolicy::VerifiedOnly)
 }
 
-/// Adjust with explicit data policy. All dates examined, including those in a
-/// discarded modified-roll direction, must satisfy the policy.
+/// Adjust with explicit data policy. Every examined date must satisfy the
+/// policy. Modified rolls stop at the month boundary before trying fallback.
 ///
 /// # Errors
 /// Returns coverage, date-boundary, or walk-limit errors; no partial result.
@@ -333,11 +371,12 @@ pub(super) fn count_with_predicate(
     end: Date,
     predicate: impl Fn(Date) -> Result<bool, CalendarError>,
 ) -> Result<u32, CalendarError> {
-    // End is exclusive in the count but is still a declared input and must
-    // satisfy coverage; empty/inverted intervals do not bypass validation.
+    // Only dates counted in a nonempty half-open interval need market data.
+    // In particular, the exclusive successor of a final covered day is valid.
+    // Empty/inverted unsigned counts still validate both declared endpoints.
     predicate(start)?;
-    predicate(end)?;
     if start >= end {
+        predicate(end)?;
         return Ok(0);
     }
     let mut date = start;
@@ -362,8 +401,8 @@ pub(super) fn count_with_predicate(
 /// reversed intervals return zero after validating both endpoints.
 ///
 /// # Errors
-/// Returns errors for endpoints or traversed dates outside verified coverage,
-/// a date boundary, or the walk limit.
+/// Returns errors for counted dates outside verified coverage, a date boundary,
+/// or the walk limit. Empty/reversed intervals validate both endpoints.
 pub fn try_business_days_between(
     start: Date,
     end: Date,
@@ -372,8 +411,9 @@ pub fn try_business_days_between(
     try_business_days_between_with_policy(start, end, cal, CoveragePolicy::VerifiedOnly)
 }
 
-/// Count business days in `[start, end)` with explicit data policy. Both
-/// endpoints, including the exclusive end, must satisfy the selected policy.
+/// Count business days in `[start, end)` with explicit data policy. Every
+/// counted date must satisfy the policy; the exclusive end need not have data.
+/// Empty/reversed intervals return zero after checking both endpoints.
 ///
 /// # Errors
 /// Returns coverage, date-boundary, or walk-limit errors; no partial count.
@@ -414,8 +454,8 @@ pub(super) fn add_with_predicate(
     })
 }
 
-/// Add signed business days with verified data. Zero rolls Following, matching
-/// the legacy API; the starting day is excluded for nonzero additions.
+/// Add signed business days with verified data. Zero rolls Following;
+/// the starting day is excluded for nonzero additions.
 ///
 /// # Errors
 /// Returns coverage, date-boundary, or walk-limit errors; no partial date.
@@ -448,7 +488,8 @@ pub fn try_bus_252_for_calendar(
     try_bus_252_for_calendar_with_policy(start, end, cal, CoveragePolicy::VerifiedOnly)
 }
 
-/// Bus/252 with explicit calendar data policy. Both endpoints are validated.
+/// Bus/252 with explicit calendar data policy. Every counted date must satisfy
+/// the policy; a nonempty interval's exclusive end need not have market data.
 ///
 /// # Errors
 /// Returns coverage, date-boundary, or walk-limit errors; no partial fraction.
@@ -497,6 +538,71 @@ mod tests {
         assert_eq!(
             adjust_with_predicate(min, Roll::Preceding, |_| Ok(false)),
             Err(CalendarError::DateBoundary { date: min })
+        );
+    }
+    #[test]
+    fn modified_roll_uses_known_month_before_unavailable_next_year() {
+        let date = Date::ymd(2026, 12, 31).unwrap();
+        let expected = Date::ymd(2026, 12, 30).unwrap();
+        assert_eq!(
+            try_adjust(date, Roll::ModifiedFollowing, Calendar::BrazilB3),
+            Ok(expected)
+        );
+        assert_eq!(
+            try_adjust(date, Roll::EndOfMonth, Calendar::BrazilB3),
+            Ok(expected)
+        );
+        assert!(matches!(
+            try_adjust(date, Roll::Following, Calendar::BrazilB3),
+            Err(CalendarError::OutOfCoverage { .. })
+        ));
+    }
+
+    #[test]
+    fn unsupported_holidays_and_weekends_return_coverage_errors() {
+        for (calendar, date) in [
+            (Calendar::UnitedKingdom, Date::ymd(2045, 12, 25).unwrap()),
+            (Calendar::UnitedKingdom, Date::ymd(2015, 12, 25).unwrap()),
+            (Calendar::BrazilB3, Date::ymd(2027, 1, 2).unwrap()),
+        ] {
+            let expected = Err(CalendarError::OutOfCoverage { calendar, date });
+            assert_eq!(try_is_holiday(date, calendar), expected);
+            assert_eq!(try_is_business_day(date, calendar), expected);
+        }
+    }
+    #[test]
+    fn full_finite_b3_year_allows_the_exclusive_successor() {
+        let start = Date::ymd(2026, 1, 1).unwrap();
+        let end = Date::ymd(2027, 1, 1).unwrap();
+        // 261 weekdays, less the 14 official weekday full-day closures.
+        assert_eq!(
+            try_business_days_between(start, end, Calendar::BrazilB3),
+            Ok(247)
+        );
+        assert_eq!(
+            try_bus_252_for_calendar(start, end, Calendar::BrazilB3),
+            Ok(247.0 / 252.0)
+        );
+        assert_eq!(
+            try_bus_252_for_calendar(end, start, Calendar::BrazilB3),
+            Ok(-247.0 / 252.0)
+        );
+        // Crossing one day farther really requires the absent 2027 schedule.
+        let beyond = Date::ymd(2027, 1, 2).unwrap();
+        assert_eq!(
+            try_business_days_between(start, beyond, Calendar::BrazilB3),
+            Err(CalendarError::OutOfCoverage {
+                calendar: Calendar::BrazilB3,
+                date: end
+            })
+        );
+        // An empty unsupported interval retains an explicit coverage error.
+        assert_eq!(
+            try_business_days_between(end, end, Calendar::BrazilB3),
+            Err(CalendarError::OutOfCoverage {
+                calendar: Calendar::BrazilB3,
+                date: end
+            })
         );
     }
 }

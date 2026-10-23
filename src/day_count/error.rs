@@ -7,6 +7,7 @@ use core::fmt;
 
 /// A year fraction cannot be computed from the supplied contractual context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DayCountError {
     /// Act/365L or Act/Act ICMA requires an explicit reference coupon period.
     MissingCouponPeriod,

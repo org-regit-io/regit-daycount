@@ -13,7 +13,7 @@
 //! to compare, and cheap to hash; the crate moves dates around freely.
 //!
 //! All arithmetic is grounded in **Howard Hinnant's `days_from_civil` /
-//! `civil_from_days`** algorithm — a public-domain, branchless, integer-only
+//! `civil_from_days`** algorithm — a public-domain, integer-only
 //! conversion between a `(year, month, day)` triple and a signed count of
 //! days from the civil epoch 1970-01-01 — transcribed here directly. The
 //! original derivation is at
@@ -69,19 +69,19 @@ pub enum Weekday {
 
 /// A Gregorian-calendar date — `(year, month, day)`.
 ///
-/// A `Date` is created by [`Date::ymd`] (validating) or
-/// [`Date::ymd_unchecked`] (caller asserts validity); the field layout is
-/// private so the invariant that the triple names a real date cannot be
-/// violated by direct construction. The type is `Copy` and allocates
-/// nothing.
+/// A `Date` is created by the validating, `const` constructor [`Date::ymd`].
+/// Its private fields and checked arithmetic preserve the invariant that every
+/// publicly obtainable value names a real date in the supported year range.
+/// The type is `Copy` and allocates nothing.
 ///
 /// `PartialOrd` / `Ord` follow the natural chronological order — equivalent
 /// to lexicographic order on `(year, month, day)`, which is the same thing
 /// for Gregorian dates.
 ///
-/// The accepted year range is `1583..=9999`: the Gregorian calendar took
-/// effect in October 1582, and from 1583 onward every day-count and
-/// holiday-calendar rule this crate implements is defined uniformly.
+/// The accepted year range is `1583..=9999`. This is the Gregorian date
+/// domain of the primitive; each market calendar has its own narrower
+/// availability and verification coverage. A valid `Date` alone does not
+/// establish that a calendar can classify it.
 ///
 /// # Examples
 ///
@@ -95,7 +95,7 @@ pub enum Weekday {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Date {
-    /// The year, as a signed integer (proleptic Gregorian; year 0 exists).
+    /// The year, in `MIN_YEAR..=MAX_YEAR`.
     year: i32,
     /// The month, `1..=12`.
     month: u8,
@@ -108,8 +108,8 @@ impl Date {
     /// Smallest accepted year (1583 — the first full year after the
     /// Gregorian reform of October 1582).
     pub const MIN_YEAR: i32 = 1583;
-    /// Largest accepted year (9999 — keeps the year an `i16`-fittable
-    /// value and matches every published holiday-calendar horizon).
+    /// Largest accepted year. Market-calendar horizons are separate from
+    /// this date-domain limit.
     pub const MAX_YEAR: i32 = 9999;
 
     // ─── Construction ────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ impl Date {
     ///     Err(ValidationError::InvalidDate { rule: "day-out-of-range" }),
     /// );
     /// ```
-    pub fn ymd(year: i32, month: u8, day: u8) -> Result<Self, ValidationError> {
+    pub const fn ymd(year: i32, month: u8, day: u8) -> Result<Self, ValidationError> {
         if year < Self::MIN_YEAR {
             return Err(ValidationError::OutOfRange {
                 what: "year < 1583",
@@ -155,13 +155,13 @@ impl Date {
                 what: "year > 9999",
             });
         }
-        if !(1..=12).contains(&month) {
+        if month < 1 || month > 12 {
             return Err(ValidationError::InvalidDate {
                 rule: "month-out-of-range",
             });
         }
         let dim = Self::days_in_month(year, month);
-        if !(1..=dim).contains(&day) {
+        if day < 1 || day > dim {
             return Err(ValidationError::InvalidDate {
                 rule: "day-out-of-range",
             });
@@ -169,24 +169,15 @@ impl Date {
         Ok(Self { year, month, day })
     }
 
-    /// Constructs a `Date` without validating the triple.
-    ///
-    /// The caller asserts that `(year, month, day)` names a real Gregorian
-    /// date inside the supported year range. This exists for `const`-context
-    /// construction and for reconstructing a `Date` from fields validated
-    /// earlier; prefer [`Date::ymd`] for any untrusted input.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use regit_daycount::Date;
-    ///
-    /// let d = Date::ymd_unchecked(2026, 5, 23);
-    /// assert_eq!(d.year(), 2026);
-    /// ```
+    /// Internal construction for statically valid dates and bounded algorithms.
+    /// A broken internal assumption fails immediately rather than creating an
+    /// invalid value. Untrusted input must use [`Self::ymd`].
     #[must_use]
-    pub const fn ymd_unchecked(year: i32, month: u8, day: u8) -> Self {
-        Self { year, month, day }
+    pub(crate) const fn ymd_unchecked(year: i32, month: u8, day: u8) -> Self {
+        match Self::ymd(year, month, day) {
+            Ok(date) => date,
+            Err(_) => panic!("internal Date construction must be valid"),
+        }
     }
 
     // ─── Trivial accessors ───────────────────────────────────────────────
@@ -198,7 +189,7 @@ impl Date {
     /// ```
     /// use regit_daycount::Date;
     ///
-    /// assert_eq!(Date::ymd_unchecked(2026, 5, 23).year(), 2026);
+    /// assert_eq!(Date::ymd(2026, 5, 23).unwrap().year(), 2026);
     /// ```
     #[must_use]
     #[inline]
@@ -213,7 +204,7 @@ impl Date {
     /// ```
     /// use regit_daycount::Date;
     ///
-    /// assert_eq!(Date::ymd_unchecked(2026, 5, 23).month(), 5);
+    /// assert_eq!(Date::ymd(2026, 5, 23).unwrap().month(), 5);
     /// ```
     #[must_use]
     #[inline]
@@ -228,7 +219,7 @@ impl Date {
     /// ```
     /// use regit_daycount::Date;
     ///
-    /// assert_eq!(Date::ymd_unchecked(2026, 5, 23).day(), 23);
+    /// assert_eq!(Date::ymd(2026, 5, 23).unwrap().day(), 23);
     /// ```
     #[must_use]
     #[inline]
@@ -299,7 +290,7 @@ impl Date {
     /// Days from the civil epoch 1970-01-01 to `(year, month, day)`.
     ///
     /// Transcribed verbatim (in `i64`) from Howard Hinnant's
-    /// `days_from_civil` — public-domain, branchless, integer-only — at
+    /// `days_from_civil` — public-domain, integer-only — at
     /// <http://howardhinnant.github.io/date_algorithms.html>. The output is
     /// negative for dates before 1970-01-01 and zero on that date itself.
     ///
@@ -332,14 +323,11 @@ impl Date {
     /// Inverse of [`Self::to_civil_days`].
     ///
     /// Transcribed verbatim from Howard Hinnant's `civil_from_days` —
-    /// public-domain, branchless, integer-only — at
+    /// public-domain, integer-only — at
     /// <http://howardhinnant.github.io/date_algorithms.html>.
     ///
-    /// The output triple always satisfies `is_leap_year(year)`'s rule for
-    /// its `(month, day)`; if it falls outside this crate's supported year
-    /// range, [`Self::ymd_unchecked`] wraps it without re-validating —
-    /// arithmetic that escapes the window is the caller's responsibility
-    /// to bound.
+    /// The caller must bound `z` to the civil-day counts of the supported
+    /// date domain before conversion; [`Self::try_add_days`] does so.
     //
     // The cast lints are silenced for the algorithm body: `doe ∈
     // [0, 146_096]`, `mp ∈ [0, 11]`, `d ∈ [1, 31]`, and `year` fits in
@@ -407,12 +395,13 @@ impl Date {
 
     /// Returns `self` advanced by `days` calendar days (negative goes back).
     ///
-    /// Implemented by converting `self` to its Hinnant civil-day count,
-    /// adding `days`, and converting back. The intermediate arithmetic is
-    /// `i64`, so a 32-bit `days` cannot overflow. The result is constructed
-    /// via [`Self::ymd_unchecked`] and is *not* re-validated against the
-    /// `[1583, 9999]` window — arithmetic that escapes that window is the
-    /// caller's responsibility.
+    /// Intermediate arithmetic uses `i64`, so every `i32` offset is handled
+    /// without overflow. The result remains in the supported date domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidationError::OutOfRange`] if the result would precede
+    /// `1583-01-01` or follow `9999-12-31`.
     ///
     /// # Examples
     ///
@@ -421,20 +410,34 @@ impl Date {
     ///
     /// // Plain forward step into the next month.
     /// assert_eq!(
-    ///     Date::ymd(2026, 1, 1).unwrap().add_days(31),
+    ///     Date::ymd(2026, 1, 1).unwrap().try_add_days(31).unwrap(),
     ///     Date::ymd(2026, 2, 1).unwrap(),
     /// );
     ///
     /// // Leap-year boundary.
     /// assert_eq!(
-    ///     Date::ymd(2024, 2, 28).unwrap().add_days(1),
+    ///     Date::ymd(2024, 2, 28).unwrap().try_add_days(1).unwrap(),
     ///     Date::ymd(2024, 2, 29).unwrap(),
     /// );
     /// ```
-    #[must_use]
-    pub fn add_days(self, days: i32) -> Self {
+    pub fn try_add_days(self, days: i32) -> Result<Self, ValidationError> {
+        Self::ymd(self.year, self.month, self.day)?;
         let z = Self::to_civil_days(self.year, self.month, self.day) + i64::from(days);
-        Self::from_civil_days(z)
+        if z < Self::to_civil_days(Self::MIN_YEAR, 1, 1)
+            || z > Self::to_civil_days(Self::MAX_YEAR, 12, 31)
+        {
+            return Err(ValidationError::OutOfRange {
+                what: "day arithmetic leaves supported date range",
+            });
+        }
+        Ok(Self::from_civil_days(z))
+    }
+
+    /// Internal arithmetic whose callers have bounded the result in advance.
+    #[must_use]
+    pub(crate) fn add_days(self, days: i32) -> Self {
+        self.try_add_days(days)
+            .expect("internal day arithmetic must stay in the supported date range")
     }
 
     /// Returns `self` advanced by `months` months, clamping the day of the
@@ -447,8 +450,14 @@ impl Date {
     /// 2026-02-28` (not a leap year) and `2024-01-31 + 1 month =
     /// 2024-02-29` (leap year).
     ///
-    /// The result is constructed via [`Self::ymd_unchecked`] and is *not*
-    /// re-validated against the `[1583, 9999]` window.
+    /// This clamps a missing day; it does not preserve an end-of-month anchor
+    /// when the original day exists in the destination month. For example,
+    /// `2026-02-28 + 1 month = 2026-03-28`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidationError::OutOfRange`] if the result's year would be
+    /// outside `1583..=9999`, including for extreme `i32` offsets.
     ///
     /// # Examples
     ///
@@ -456,29 +465,36 @@ impl Date {
     /// use regit_daycount::Date;
     ///
     /// assert_eq!(
-    ///     Date::ymd(2026, 1, 31).unwrap().add_months_eom_aware(1),
+    ///     Date::ymd(2026, 1, 31).unwrap().try_add_months_eom_aware(1).unwrap(),
     ///     Date::ymd(2026, 2, 28).unwrap(),
     /// );
     /// assert_eq!(
-    ///     Date::ymd(2024, 1, 31).unwrap().add_months_eom_aware(1),
+    ///     Date::ymd(2024, 1, 31).unwrap().try_add_months_eom_aware(1).unwrap(),
     ///     Date::ymd(2024, 2, 29).unwrap(),
     /// );
     /// ```
-    #[must_use]
-    pub fn add_months_eom_aware(self, months: i32) -> Self {
+    pub fn try_add_months_eom_aware(self, months: i32) -> Result<Self, ValidationError> {
+        Self::ymd(self.year, self.month, self.day)?;
         // Convert (year, month) to a zero-based month index, add `months`,
         // and decompose. Performed in `i64` to avoid overflow on the
-        // extremes of the supported year range. `new_year_i64` is at most
-        // ~`MAX_YEAR + |months|/12`, which fits in `i32` for any reasonable
-        // offset; `new_month_i64` is in `1..=12`.
+        // extremes of the supported year range and all i32 month offsets.
         let total = i64::from(self.year) * 12 + (i64::from(self.month) - 1) + i64::from(months);
+        if total < i64::from(Self::MIN_YEAR) * 12 || total > i64::from(Self::MAX_YEAR) * 12 + 11 {
+            return Err(ValidationError::OutOfRange {
+                what: "month arithmetic leaves supported date range",
+            });
+        }
         let new_year_i64 = total.div_euclid(12);
         let new_month_i64 = total.rem_euclid(12) + 1;
-        let new_year = i32::try_from(new_year_i64).unwrap_or(self.year);
-        let new_month = u8::try_from(new_month_i64).unwrap_or(self.month);
+        // The range check bounds the year to 1583..=9999, while Euclidean
+        // remainder bounds the month to 1..=12. Both narrowing casts are exact.
+        #[allow(clippy::cast_possible_truncation)]
+        let new_year = new_year_i64 as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let new_month = new_month_i64 as u8;
         let dim = Self::days_in_month(new_year, new_month);
         let new_day = if self.day < dim { self.day } else { dim };
-        Self::ymd_unchecked(new_year, new_month, new_day)
+        Self::ymd(new_year, new_month, new_day)
     }
 
     /// Returns the date of the `n`-th occurrence of `weekday` in
@@ -536,8 +552,9 @@ impl Date {
         }
         // `day_in_month ∈ [1, 31]` here — bounded by the `> dim` check
         // above and a per-month maximum of 31 days.
-        let day = u8::try_from(day_in_month).unwrap_or(1);
-        Ok(Self { year, month, day })
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let day = day_in_month as u8;
+        Self::ymd(year, month, day)
     }
 
     /// Returns the date of Easter Sunday in the (Western, Gregorian) year
@@ -551,13 +568,18 @@ impl Date {
     /// The TARGET2 holiday rule derives Good Friday and Easter Monday from
     /// this date.
     ///
+    /// # Errors
+    ///
+    /// Returns [`ValidationError::OutOfRange`] if `year` is outside
+    /// `1583..=9999`.
+    ///
     /// # Examples
     ///
     /// ```
     /// use regit_daycount::Date;
     ///
     /// // Easter Sunday 2026 falls on 5 April.
-    /// assert_eq!(Date::easter_sunday(2026), Date::ymd(2026, 4, 5).unwrap());
+    /// assert_eq!(Date::try_easter_sunday(2026).unwrap(), Date::ymd(2026, 4, 5).unwrap());
     /// ```
     //
     // The Meeus / Butcher / Anonymous-Gregorian variables `a..m` are the
@@ -565,13 +587,13 @@ impl Date {
     // implementation auditable line-by-line against the published algorithm.
     // The casts at the bottom narrow values bounded by the algorithm to
     // `month ∈ {3, 4}` and `day ∈ [1, 31]`.
-    #[must_use]
     #[allow(
         clippy::many_single_char_names,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    pub fn easter_sunday(year: i32) -> Self {
+    pub fn try_easter_sunday(year: i32) -> Result<Self, ValidationError> {
+        Self::ymd(year, 1, 1)?;
         // Meeus / Butcher / Anonymous Gregorian. Variable names follow the
         // standard presentation in Meeus §8.
         let y = year;
@@ -589,11 +611,14 @@ impl Date {
         let m = (a + 11 * h + 22 * l) / 451;
         let month_num = (h + l - 7 * m + 114) / 31; // 3 = March, 4 = April
         let day_num = ((h + l - 7 * m + 114) % 31) + 1;
-        Self {
-            year: y,
-            month: month_num as u8,
-            day: day_num as u8,
-        }
+        Self::ymd(y, month_num as u8, day_num as u8)
+    }
+
+    /// Internal Easter computation for a year already inside the date domain.
+    #[cfg(any(feature = "calendars", test))]
+    #[must_use]
+    pub(crate) fn easter_sunday(year: i32) -> Self {
+        Self::try_easter_sunday(year).expect("internal Easter year must be in range")
     }
 
     /// Returns the signed number of days from `self` to `other`.
@@ -617,14 +642,15 @@ impl Date {
     /// ```
     //
     // The difference of two civil-day counts for dates in `[1583, 9999]`
-    // is bounded by ~3.1 × 10⁶, which fits in `i32`. `try_from` is used
-    // defensively; on the (impossible-in-range) overflow path it falls back
-    // to `i32::MAX`.
+    // is bounded by ~3.1 × 10⁶, which fits in `i32`. The private fields and
+    // validated constructors preserve this bound; a broken internal invariant
+    // must never be converted into a plausible financial result.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn days_between(self, other: Self) -> i32 {
         let a = Self::to_civil_days(self.year, self.month, self.day);
         let b = Self::to_civil_days(other.year, other.month, other.day);
-        i32::try_from(b - a).unwrap_or(i32::MAX)
+        (b - a) as i32
     }
 }
 
@@ -693,6 +719,19 @@ mod tests {
     fn ymd_accepts_boundary_years() {
         assert!(Date::ymd(1583, 1, 1).is_ok());
         assert!(Date::ymd(9999, 12, 31).is_ok());
+    }
+
+    #[test]
+    fn ymd_validates_in_const_context() {
+        const VALID: Result<Date, ValidationError> = Date::ymd(2024, 2, 29);
+        const INVALID: Result<Date, ValidationError> = Date::ymd(2025, 2, 29);
+        assert_eq!(VALID, Date::ymd(2024, 2, 29));
+        assert_eq!(
+            INVALID,
+            Err(ValidationError::InvalidDate {
+                rule: "day-out-of-range",
+            })
+        );
     }
 
     #[test]
@@ -873,6 +912,31 @@ mod tests {
     }
 
     #[test]
+    fn checked_day_arithmetic_enforces_both_boundaries_and_extreme_offsets() {
+        let first = Date::ymd(Date::MIN_YEAR, 1, 1).unwrap();
+        let last = Date::ymd(Date::MAX_YEAR, 12, 31).unwrap();
+        let span = first.days_between(last);
+        assert_eq!(first.try_add_days(span), Ok(last));
+        assert_eq!(last.try_add_days(-span), Ok(first));
+        assert_eq!(first.try_add_days(0), Ok(first));
+        assert_eq!(last.try_add_days(0), Ok(last));
+        for (date, offset) in [
+            (first, -1),
+            (last, 1),
+            (last, 10),
+            (first, i32::MIN),
+            (first, i32::MAX),
+            (last, i32::MIN),
+            (last, i32::MAX),
+        ] {
+            assert!(matches!(
+                date.try_add_days(offset),
+                Err(ValidationError::OutOfRange { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn add_days_round_trip_small_grid() {
         // Manual deterministic round-trip grid over a wide span of offsets.
         let anchor = Date::ymd(2026, 5, 23).unwrap();
@@ -897,7 +961,10 @@ mod tests {
     #[test]
     fn add_months_eom_aware_non_leap_clamp() {
         assert_eq!(
-            Date::ymd(2026, 1, 31).unwrap().add_months_eom_aware(1),
+            Date::ymd(2026, 1, 31)
+                .unwrap()
+                .try_add_months_eom_aware(1)
+                .unwrap(),
             Date::ymd(2026, 2, 28).unwrap()
         );
     }
@@ -905,7 +972,10 @@ mod tests {
     #[test]
     fn add_months_eom_aware_leap_keeps_29() {
         assert_eq!(
-            Date::ymd(2024, 1, 31).unwrap().add_months_eom_aware(1),
+            Date::ymd(2024, 1, 31)
+                .unwrap()
+                .try_add_months_eom_aware(1)
+                .unwrap(),
             Date::ymd(2024, 2, 29).unwrap()
         );
     }
@@ -913,7 +983,10 @@ mod tests {
     #[test]
     fn add_months_eom_aware_year_rollover() {
         assert_eq!(
-            Date::ymd(2026, 12, 31).unwrap().add_months_eom_aware(1),
+            Date::ymd(2026, 12, 31)
+                .unwrap()
+                .try_add_months_eom_aware(1)
+                .unwrap(),
             Date::ymd(2027, 1, 31).unwrap()
         );
     }
@@ -922,18 +995,52 @@ mod tests {
     fn add_months_eom_aware_negative_rollover() {
         // -1 month from 2026-03-31 lands on 2026-02-28 (clamped).
         assert_eq!(
-            Date::ymd(2026, 3, 31).unwrap().add_months_eom_aware(-1),
+            Date::ymd(2026, 3, 31)
+                .unwrap()
+                .try_add_months_eom_aware(-1)
+                .unwrap(),
             Date::ymd(2026, 2, 28).unwrap()
         );
         // -1 month from 2024-03-31 lands on 2024-02-29 (clamped, leap).
         assert_eq!(
-            Date::ymd(2024, 3, 31).unwrap().add_months_eom_aware(-1),
+            Date::ymd(2024, 3, 31)
+                .unwrap()
+                .try_add_months_eom_aware(-1)
+                .unwrap(),
             Date::ymd(2024, 2, 29).unwrap()
         );
         // -12 months goes back exactly one year.
         assert_eq!(
-            Date::ymd(2026, 5, 15).unwrap().add_months_eom_aware(-12),
+            Date::ymd(2026, 5, 15)
+                .unwrap()
+                .try_add_months_eom_aware(-12)
+                .unwrap(),
             Date::ymd(2025, 5, 15).unwrap()
+        );
+    }
+
+    #[test]
+    fn checked_month_arithmetic_bounds_extremes_and_documents_clamping() {
+        let first = Date::ymd(Date::MIN_YEAR, 1, 1).unwrap();
+        let last = Date::ymd(Date::MAX_YEAR, 12, 31).unwrap();
+        for (date, offset) in [
+            (first, -1),
+            (last, 1),
+            (first, i32::MIN),
+            (first, i32::MAX),
+            (last, i32::MIN),
+            (last, i32::MAX),
+        ] {
+            assert!(matches!(
+                date.try_add_months_eom_aware(offset),
+                Err(ValidationError::OutOfRange { .. })
+            ));
+        }
+        assert_eq!(first.try_add_months_eom_aware(0), Ok(first));
+        assert_eq!(last.try_add_months_eom_aware(0), Ok(last));
+        assert_eq!(
+            Date::ymd(2026, 2, 28).unwrap().try_add_months_eom_aware(1),
+            Date::ymd(2026, 3, 28)
         );
     }
 
@@ -1020,6 +1127,25 @@ mod tests {
                 Date::easter_sunday(y),
                 Date::ymd(y, m, d).unwrap(),
                 "Easter {y}",
+            );
+        }
+    }
+
+    #[test]
+    fn easter_rejects_years_outside_the_date_domain() {
+        for year in [i32::MIN, Date::MIN_YEAR - 1, Date::MAX_YEAR + 1, i32::MAX] {
+            assert!(matches!(
+                Date::try_easter_sunday(year),
+                Err(ValidationError::OutOfRange { .. })
+            ));
+        }
+        for year in [Date::MIN_YEAR, Date::MAX_YEAR] {
+            let easter = Date::try_easter_sunday(year).unwrap();
+            assert_eq!(easter.year(), year);
+            assert_eq!(easter.day_of_week(), Weekday::Sun);
+            assert!(
+                (Date::ymd(year, 3, 22).unwrap()..=Date::ymd(year, 4, 25).unwrap())
+                    .contains(&easter)
             );
         }
     }

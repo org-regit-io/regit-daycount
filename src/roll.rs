@@ -23,18 +23,18 @@
 //!                     schedule-origin EOM propagation needs separate context
 //! ```
 //!
-//! The free function [`apply`] applies a roll. To avoid the cycle between
-//! `roll` and `calendar` (`roll::apply` needs to know what a business day
-//! is, and `calendar::adjust` is the thin wrapper that closes over a
-//! `Calendar` (with the `calendars` feature)), `apply` takes a caller-supplied `is_business_day`
-//! predicate rather than a `Calendar`. The `calendar` module passes
-//! `|d| !is_holiday(d, cal) && !is_weekend(d)` in.
+//! The free function [`try_apply`] applies a roll under a caller-supplied
+//! business-day predicate. It returns an explicit error if determining the
+//! answer would leave the supported date domain or exceed its bounded walk.
+//! For named calendars with coverage checks, use `calendar::try_adjust` when
+//! the `calendars` feature is enabled.
 //!
 //! # References
 //!
 //! - ISDA 2006 Definitions §4.12 (Business Day Convention).
 
 use crate::date::Date;
+use core::fmt;
 
 // ─── Roll ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +53,7 @@ use crate::date::Date;
 /// assert_eq!(r, Roll::ModifiedFollowing);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Roll {
     /// Return the date as given, even if it is a weekend or holiday.
     Unadjusted,
@@ -74,185 +75,150 @@ pub enum Roll {
     EndOfMonth,
 }
 
-// ─── apply ───────────────────────────────────────────────────────────────────
+/// A date roll could not determine a business date within its supported domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RollError {
+    /// Determining the result requires a date outside `1583..=9999`.
+    DateBoundary {
+        /// The last supported date reached in the required direction.
+        date: Date,
+    },
+    /// No business date was found within the bounded search.
+    WalkLimitExceeded {
+        /// Maximum one-day distance searched in either direction.
+        limit: u32,
+    },
+}
 
-/// Maximum number of one-day steps `apply` will take in any direction
-/// before giving up. A real calendar has at most a handful of consecutive
-/// non-business days, so 366 is a generous defensive bound. If the cap is
-/// reached, `apply` returns the original `date` unchanged — silently, since
-/// the function has no `Result` return — which is the safest fallback for a
-/// pathological predicate.
+impl fmt::Display for RollError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DateBoundary { date } => write!(f, "date roll reached date boundary at {date:?}"),
+            Self::WalkLimitExceeded { limit } => write!(f, "date roll exceeded {limit} steps"),
+        }
+    }
+}
+
+impl core::error::Error for RollError {}
+
+/// Maximum one-day distance searched in either direction. A failed search
+/// returns an error, never an unchanged non-business date or partial answer.
 const MAX_STEPS: u32 = 366;
 
-/// Applies a date-roll convention to `date` under a caller-supplied
-/// business-day predicate.
+/// Applies a date-roll convention under a caller-supplied business-day predicate.
 ///
-/// `is_business_day` is the bridge to the caller's holiday calendar: it
-/// returns `true` exactly for dates the market is open. The convention is
-/// then a deterministic walk over the predicate.
+/// The predicate must consistently report whether each date is a business day.
+/// The input date is returned unchanged if it is already a business day, or
+/// if `conv` is [`Roll::Unadjusted`].
 ///
-/// The walk is capped at `MAX_STEPS` one-day steps in either direction —
-/// a defensive bound to keep a pathological predicate from looping
-/// indefinitely. The cap is never reached for any real holiday calendar.
-/// If the cap is reached, `apply` returns the original `date` unchanged.
+/// Modified Following searches forward inside the input month, then searches
+/// backward from the input if no business date remains in that month. Modified
+/// Preceding mirrors this rule. This avoids requiring an out-of-domain date
+/// merely to establish that the month would change at the date boundaries.
+/// [`Roll::EndOfMonth`] uses Modified Following for this standalone-date API;
+/// a schedule-origin anchor requires separate schedule context.
 ///
-/// # Convention details
+/// [`Roll::Nearest`] searches in increasing day distance; ties go forward.
 ///
-/// - **`Unadjusted`** — return `date`.
-/// - **`Following`** — walk forward day-by-day until the predicate holds.
-/// - **`ModifiedFollowing`** — `Following`; if the result is in a different
-///   month from `date`, fall back to `Preceding` from `date`.
-/// - **`Preceding`** — walk backward day-by-day until the predicate holds.
-/// - **`ModifiedPreceding`** — `Preceding`; if the result is in a different
-///   month from `date`, fall back to `Following` from `date`.
-/// - **`Nearest`** — if `date` is a business day, return it. Otherwise
-///   compute the day distances to the next and previous business days and
-///   return the closer one; ties go to `Following`.
-/// - **`EndOfMonth`** — for this standalone-date API, preserve a business
-///   date and otherwise apply `ModifiedFollowing`. It agrees with a zero-month
-///   `QuantLib` calendar advance using `ModifiedFollowing` and `endOfMonth=true`.
-///   The signature contains no originating coupon or schedule anchor, so it
-///   does not generate schedules or propagate end-of-month anchoring.
+/// # Errors
+///
+/// Returns [`RollError::DateBoundary`] if a required search leaves the supported
+/// date range, or [`RollError::WalkLimitExceeded`] if no business date is found
+/// within 366 calendar days in the required direction. No partial result is
+/// returned. `Unadjusted` does not call the predicate.
 ///
 /// # Examples
 ///
 /// ```
 /// use regit_daycount::{Date, Roll, Weekday};
-/// use regit_daycount::roll::apply;
+/// use regit_daycount::roll::try_apply;
 ///
-/// // A weekend-only calendar: Sat and Sun are not business days.
-/// let is_biz = |d: Date| {
-///     let wd = d.day_of_week();
-///     wd != Weekday::Sat && wd != Weekday::Sun
-/// };
-///
-/// // Saturday 2026-05-23 rolled Following lands on Monday 2026-05-25.
+/// let is_biz = |d: Date| !matches!(d.day_of_week(), Weekday::Sat | Weekday::Sun);
 /// let sat = Date::ymd(2026, 5, 23).unwrap();
-/// assert_eq!(apply(sat, Roll::Following, is_biz), Date::ymd(2026, 5, 25).unwrap());
+/// assert_eq!(
+///     try_apply(sat, Roll::Following, is_biz).unwrap(),
+///     Date::ymd(2026, 5, 25).unwrap(),
+/// );
 /// ```
-#[must_use]
-pub fn apply(date: Date, conv: Roll, is_business_day: impl Fn(Date) -> bool) -> Date {
+pub fn try_apply(
+    date: Date,
+    conv: Roll,
+    is_business_day: impl Fn(Date) -> bool,
+) -> Result<Date, RollError> {
     match conv {
-        Roll::Unadjusted => date,
-        Roll::Following => walk_forward(date, &is_business_day),
-        Roll::Preceding => walk_backward(date, &is_business_day),
-        Roll::ModifiedFollowing => modified_following(date, &is_business_day),
-        Roll::ModifiedPreceding => {
-            let p = walk_backward(date, &is_business_day);
-            if p.month() == date.month() {
-                p
-            } else {
-                walk_forward(date, &is_business_day)
+        Roll::Unadjusted => Ok(date),
+        Roll::Following => walk(date, 1, &is_business_day),
+        Roll::Preceding => walk(date, -1, &is_business_day),
+        Roll::ModifiedFollowing | Roll::EndOfMonth => {
+            match walk_inside_month(date, 1, &is_business_day)? {
+                Some(result) => Ok(result),
+                None => walk(date, -1, &is_business_day),
             }
         }
-        Roll::Nearest => {
-            if is_business_day(date) {
-                return date;
-            }
-            // Find both neighbours and compare distances. Tie → forward.
-            let forward = walk_forward(date, &is_business_day);
-            let backward = walk_backward(date, &is_business_day);
-            let fwd_dist = date.days_between(forward).unsigned_abs();
-            let bwd_dist = date.days_between(backward).unsigned_abs();
-            if fwd_dist <= bwd_dist {
-                forward
-            } else {
-                backward
-            }
-        }
-        Roll::EndOfMonth => {
-            if is_last_business_day_of_month(date, &is_business_day) {
-                last_business_day_of_month(date, &is_business_day)
-            } else {
-                // Fall through to ModifiedFollowing.
-                modified_following(date, &is_business_day)
-            }
-        }
+        Roll::ModifiedPreceding => match walk_inside_month(date, -1, &is_business_day)? {
+            Some(result) => Ok(result),
+            None => walk(date, 1, &is_business_day),
+        },
+        Roll::Nearest => nearest(date, &is_business_day),
     }
 }
 
-/// `ModifiedFollowing` body — extracted so `EndOfMonth` can reuse it.
-fn modified_following(date: Date, is_biz: &impl Fn(Date) -> bool) -> Date {
-    let f = walk_forward(date, is_biz);
-    if f.month() == date.month() {
-        f
-    } else {
-        walk_backward(date, is_biz)
+fn step(date: Date, direction: i32) -> Result<Date, RollError> {
+    date.try_add_days(direction)
+        .map_err(|_| RollError::DateBoundary { date })
+}
+
+fn walk(date: Date, direction: i32, is_biz: &impl Fn(Date) -> bool) -> Result<Date, RollError> {
+    let mut current = date;
+    for distance in 0..=MAX_STEPS {
+        if is_biz(current) {
+            return Ok(current);
+        }
+        if distance < MAX_STEPS {
+            current = step(current, direction)?;
+        }
+    }
+    Err(RollError::WalkLimitExceeded { limit: MAX_STEPS })
+}
+
+/// `None` means the required direction would leave the input month.
+fn walk_inside_month(
+    date: Date,
+    direction: i32,
+    is_biz: &impl Fn(Date) -> bool,
+) -> Result<Option<Date>, RollError> {
+    let mut current = date;
+    loop {
+        if is_biz(current) {
+            return Ok(Some(current));
+        }
+        if (direction > 0 && current.day() == Date::days_in_month(date.year(), date.month()))
+            || (direction < 0 && current.day() == 1)
+        {
+            return Ok(None);
+        }
+        current = step(current, direction)?;
     }
 }
 
-// ─── Walkers ─────────────────────────────────────────────────────────────────
-
-/// Advances `date` by one day at a time until `is_biz` holds, up to
-/// [`MAX_STEPS`] steps. Returns `date` unchanged if the cap is reached.
-fn walk_forward(date: Date, is_biz: &impl Fn(Date) -> bool) -> Date {
-    let mut d = date;
-    let mut steps = 0u32;
-    while !is_biz(d) {
-        if steps >= MAX_STEPS {
-            return date;
-        }
-        d = d.add_days(1);
-        steps += 1;
+fn nearest(date: Date, is_biz: &impl Fn(Date) -> bool) -> Result<Date, RollError> {
+    if is_biz(date) {
+        return Ok(date);
     }
-    d
-}
-
-/// Decrements `date` by one day at a time until `is_biz` holds, up to
-/// [`MAX_STEPS`] steps. Returns `date` unchanged if the cap is reached.
-fn walk_backward(date: Date, is_biz: &impl Fn(Date) -> bool) -> Date {
-    let mut d = date;
-    let mut steps = 0u32;
-    while !is_biz(d) {
-        if steps >= MAX_STEPS {
-            return date;
+    let mut forward = date;
+    let mut backward = date;
+    for _ in 1..=MAX_STEPS {
+        forward = step(forward, 1)?;
+        if is_biz(forward) {
+            return Ok(forward);
         }
-        d = d.add_days(-1);
-        steps += 1;
-    }
-    d
-}
-
-/// Returns the last business day of `date`'s month under `is_biz`. If no
-/// business day exists in the month (degenerate predicate), returns the
-/// last calendar day of the month.
-fn last_business_day_of_month(date: Date, is_biz: &impl Fn(Date) -> bool) -> Date {
-    let last = Date::ymd_unchecked(
-        date.year(),
-        date.month(),
-        Date::days_in_month(date.year(), date.month()),
-    );
-    let mut d = last;
-    let mut steps = 0u32;
-    while !is_biz(d) {
-        if steps >= MAX_STEPS {
-            return last;
+        backward = step(backward, -1)?;
+        if is_biz(backward) {
+            return Ok(backward);
         }
-        // Walk backward, but stay inside the month.
-        let prev = d.add_days(-1);
-        if prev.month() != date.month() || prev.year() != date.year() {
-            return last;
-        }
-        d = prev;
-        steps += 1;
     }
-    d
-}
-
-/// Returns `true` if `date` is itself a business day and there is no
-/// later business day inside its month.
-fn is_last_business_day_of_month(date: Date, is_biz: &impl Fn(Date) -> bool) -> bool {
-    if !is_biz(date) {
-        return false;
-    }
-    let mut d = date.add_days(1);
-    while d.month() == date.month() && d.year() == date.year() {
-        if is_biz(d) {
-            return false;
-        }
-        d = d.add_days(1);
-    }
-    true
+    Err(RollError::WalkLimitExceeded { limit: MAX_STEPS })
 }
 
 #[cfg(test)]
@@ -279,7 +245,7 @@ mod tests {
     #[test]
     fn unadjusted_returns_input() {
         let sat = Date::ymd(2026, 5, 23).unwrap();
-        assert_eq!(apply(sat, Roll::Unadjusted, weekends_only), sat);
+        assert_eq!(try_apply(sat, Roll::Unadjusted, weekends_only), Ok(sat));
     }
 
     // ─── Following / Preceding ───────────────────────────────────────────
@@ -289,7 +255,7 @@ mod tests {
         // 2026-05-23 is a Saturday → next business day is Mon 2026-05-25.
         let sat = Date::ymd(2026, 5, 23).unwrap();
         let mon = Date::ymd(2026, 5, 25).unwrap();
-        assert_eq!(apply(sat, Roll::Following, weekends_only), mon);
+        assert_eq!(try_apply(sat, Roll::Following, weekends_only), Ok(mon));
     }
 
     #[test]
@@ -297,14 +263,14 @@ mod tests {
         // 2026-05-23 is a Saturday → previous business day is Fri 2026-05-22.
         let sat = Date::ymd(2026, 5, 23).unwrap();
         let fri = Date::ymd(2026, 5, 22).unwrap();
-        assert_eq!(apply(sat, Roll::Preceding, weekends_only), fri);
+        assert_eq!(try_apply(sat, Roll::Preceding, weekends_only), Ok(fri));
     }
 
     #[test]
     fn following_on_business_day_is_identity() {
         let mon = Date::ymd(2026, 5, 25).unwrap();
-        assert_eq!(apply(mon, Roll::Following, weekends_only), mon);
-        assert_eq!(apply(mon, Roll::Preceding, weekends_only), mon);
+        assert_eq!(try_apply(mon, Roll::Following, weekends_only), Ok(mon));
+        assert_eq!(try_apply(mon, Roll::Preceding, weekends_only), Ok(mon));
     }
 
     // ─── ModifiedFollowing / ModifiedPreceding ───────────────────────────
@@ -315,7 +281,10 @@ mod tests {
         // month). Fall back to Preceding from 2026-05-31 → Fri 2026-05-29.
         let sun = Date::ymd(2026, 5, 31).unwrap();
         let fri = Date::ymd(2026, 5, 29).unwrap();
-        assert_eq!(apply(sun, Roll::ModifiedFollowing, weekends_only), fri);
+        assert_eq!(
+            try_apply(sun, Roll::ModifiedFollowing, weekends_only),
+            Ok(fri)
+        );
     }
 
     #[test]
@@ -324,7 +293,10 @@ mod tests {
         // fall-back.
         let sat = Date::ymd(2026, 5, 23).unwrap();
         let mon = Date::ymd(2026, 5, 25).unwrap();
-        assert_eq!(apply(sat, Roll::ModifiedFollowing, weekends_only), mon);
+        assert_eq!(
+            try_apply(sat, Roll::ModifiedFollowing, weekends_only),
+            Ok(mon)
+        );
     }
 
     #[test]
@@ -333,7 +305,10 @@ mod tests {
         // fall-back.
         let sat = Date::ymd(2026, 1, 31).unwrap();
         let fri = Date::ymd(2026, 1, 30).unwrap();
-        assert_eq!(apply(sat, Roll::ModifiedPreceding, weekends_only), fri);
+        assert_eq!(
+            try_apply(sat, Roll::ModifiedPreceding, weekends_only),
+            Ok(fri)
+        );
     }
 
     #[test]
@@ -342,7 +317,10 @@ mod tests {
         // month). Fall back to Following from 2026-02-01 → Mon 2026-02-02.
         let sun = Date::ymd(2026, 2, 1).unwrap();
         let mon = Date::ymd(2026, 2, 2).unwrap();
-        assert_eq!(apply(sun, Roll::ModifiedPreceding, weekends_only), mon);
+        assert_eq!(
+            try_apply(sun, Roll::ModifiedPreceding, weekends_only),
+            Ok(mon)
+        );
     }
 
     // ─── Nearest ─────────────────────────────────────────────────────────
@@ -350,7 +328,7 @@ mod tests {
     #[test]
     fn nearest_business_day_is_identity() {
         let mon = Date::ymd(2026, 5, 25).unwrap();
-        assert_eq!(apply(mon, Roll::Nearest, weekends_only), mon);
+        assert_eq!(try_apply(mon, Roll::Nearest, weekends_only), Ok(mon));
     }
 
     #[test]
@@ -358,7 +336,7 @@ mod tests {
         // Saturday: Friday is 1 day back, Monday is 2 days forward → Friday.
         let sat = Date::ymd(2026, 5, 23).unwrap();
         let fri = Date::ymd(2026, 5, 22).unwrap();
-        assert_eq!(apply(sat, Roll::Nearest, weekends_only), fri);
+        assert_eq!(try_apply(sat, Roll::Nearest, weekends_only), Ok(fri));
     }
 
     #[test]
@@ -366,7 +344,7 @@ mod tests {
         // Sunday: Friday is 2 days back, Monday is 1 day forward → Monday.
         let sun = Date::ymd(2026, 5, 24).unwrap();
         let mon = Date::ymd(2026, 5, 25).unwrap();
-        assert_eq!(apply(sun, Roll::Nearest, weekends_only), mon);
+        assert_eq!(try_apply(sun, Roll::Nearest, weekends_only), Ok(mon));
     }
 
     #[test]
@@ -386,7 +364,7 @@ mod tests {
         // next biz Thu 2026-05-14 (1 forward). Tie → forward (Thursday).
         let wed = Date::ymd(2026, 5, 13).unwrap();
         let thu = Date::ymd(2026, 5, 14).unwrap();
-        assert_eq!(apply(wed, Roll::Nearest, is_biz), thu);
+        assert_eq!(try_apply(wed, Roll::Nearest, is_biz), Ok(thu));
     }
 
     // ─── EndOfMonth ──────────────────────────────────────────────────────
@@ -397,7 +375,7 @@ mod tests {
         // day of February 2026 is Fri 2026-02-27. Feeding 2026-02-27 to
         // EndOfMonth keeps it at the last business day of its month (itself).
         let fri = Date::ymd(2026, 2, 27).unwrap();
-        assert_eq!(apply(fri, Roll::EndOfMonth, weekends_only), fri);
+        assert_eq!(try_apply(fri, Roll::EndOfMonth, weekends_only), Ok(fri));
     }
 
     #[test]
@@ -406,7 +384,7 @@ mod tests {
         // EndOfMonth, fall through to ModifiedFollowing — and since it's a
         // business day, the result is the date itself.
         let mid = Date::ymd(2026, 5, 15).unwrap();
-        assert_eq!(apply(mid, Roll::EndOfMonth, weekends_only), mid);
+        assert_eq!(try_apply(mid, Roll::EndOfMonth, weekends_only), Ok(mid));
     }
 
     #[test]
@@ -415,7 +393,10 @@ mod tests {
         // December 2026 is Thu 2026-12-31 (Thursday). Feeding that in to
         // EndOfMonth must keep it.
         let thu = Date::ymd(2026, 12, 31).unwrap();
-        assert_eq!(apply(thu, Roll::EndOfMonth, weekends_plus_christmas), thu);
+        assert_eq!(
+            try_apply(thu, Roll::EndOfMonth, weekends_plus_christmas),
+            Ok(thu)
+        );
     }
 
     // ─── holiday-aware adjustments ───────────────────────────────────────
@@ -426,7 +407,10 @@ mod tests {
         // Mon 2026-12-28 (skipping Sat/Sun and the holiday).
         let xmas = Date::ymd(2026, 12, 25).unwrap();
         let mon = Date::ymd(2026, 12, 28).unwrap();
-        assert_eq!(apply(xmas, Roll::Following, weekends_plus_christmas), mon);
+        assert_eq!(
+            try_apply(xmas, Roll::Following, weekends_plus_christmas),
+            Ok(mon)
+        );
     }
 
     #[test]
@@ -434,17 +418,92 @@ mod tests {
         // Preceding from Fri 2026-12-25 (holiday) → Thu 2026-12-24.
         let xmas = Date::ymd(2026, 12, 25).unwrap();
         let thu = Date::ymd(2026, 12, 24).unwrap();
-        assert_eq!(apply(xmas, Roll::Preceding, weekends_plus_christmas), thu);
+        assert_eq!(
+            try_apply(xmas, Roll::Preceding, weekends_plus_christmas),
+            Ok(thu)
+        );
     }
 
     // ─── defensive cap ───────────────────────────────────────────────────
 
     #[test]
-    fn pathological_predicate_returns_input() {
+    fn pathological_predicate_returns_an_error() {
         // A predicate that never says "business day" must not loop forever.
         let always_false = |_d: Date| false;
         let any = Date::ymd(2026, 5, 23).unwrap();
-        assert_eq!(apply(any, Roll::Following, always_false), any);
-        assert_eq!(apply(any, Roll::Preceding, always_false), any);
+        for convention in [
+            Roll::Following,
+            Roll::Preceding,
+            Roll::ModifiedFollowing,
+            Roll::ModifiedPreceding,
+            Roll::Nearest,
+            Roll::EndOfMonth,
+        ] {
+            assert_eq!(
+                try_apply(any, convention, always_false),
+                Err(RollError::WalkLimitExceeded { limit: MAX_STEPS })
+            );
+        }
+    }
+
+    #[test]
+    fn directed_rolls_report_date_boundaries() {
+        let first = Date::ymd(Date::MIN_YEAR, 1, 1).unwrap();
+        let last = Date::ymd(Date::MAX_YEAR, 12, 31).unwrap();
+        assert_eq!(
+            try_apply(first, Roll::Preceding, |_| false),
+            Err(RollError::DateBoundary { date: first })
+        );
+        assert_eq!(
+            try_apply(last, Roll::Following, |_| false),
+            Err(RollError::DateBoundary { date: last })
+        );
+        assert_eq!(
+            try_apply(last, Roll::Nearest, |date| date < last),
+            Err(RollError::DateBoundary { date: last })
+        );
+    }
+
+    #[test]
+    fn modified_rolls_can_fall_back_at_the_domain_boundary() {
+        let first = Date::ymd(Date::MIN_YEAR, 1, 1).unwrap();
+        let last = Date::ymd(Date::MAX_YEAR, 12, 31).unwrap();
+        assert_eq!(
+            try_apply(first, Roll::ModifiedPreceding, |date| date > first),
+            Ok(first.try_add_days(1).unwrap())
+        );
+        for convention in [Roll::ModifiedFollowing, Roll::EndOfMonth] {
+            assert_eq!(
+                try_apply(last, convention, |date| date < last),
+                Ok(last.try_add_days(-1).unwrap())
+            );
+        }
+        assert_eq!(try_apply(last, Roll::EndOfMonth, |_| true), Ok(last));
+    }
+
+    #[test]
+    fn search_limit_is_inclusive_and_never_returns_a_partial_result() {
+        let date = Date::ymd(2026, 1, 1).unwrap();
+        let at_limit = date.try_add_days(366).unwrap();
+        let after_limit = date.try_add_days(367).unwrap();
+        assert_eq!(
+            try_apply(date, Roll::Following, |candidate| candidate == at_limit),
+            Ok(at_limit)
+        );
+        assert_eq!(
+            try_apply(date, Roll::Following, |candidate| candidate == after_limit),
+            Err(RollError::WalkLimitExceeded { limit: MAX_STEPS })
+        );
+    }
+
+    #[test]
+    fn unadjusted_does_not_consult_the_calendar() {
+        let last = Date::ymd(Date::MAX_YEAR, 12, 31).unwrap();
+        assert_eq!(
+            try_apply(last, Roll::Unadjusted, |_| {
+                panic!("Unadjusted must not consult a calendar")
+            }),
+            Ok(last)
+        );
     }
 }

@@ -1,21 +1,9 @@
-# /// script
-# requires-python = ">=3.12,<3.14"
-# dependencies = [
-#   "QuantLib==1.44", "financepy==1.1.2", "python-dateutil==2.9.0.post0",
-#   "convertdate==2.5.1", "holidays==0.107", "PyMeeus==0.5.12", "six==1.17.0",
-#   "numpy==2.3.5", "numba==0.62.1", "llvmlite==0.45.1", "scipy==1.16.3",
-#   "pandas==2.3.3", "matplotlib==3.10.9", "contourpy==1.4.0", "cycler==0.12.1",
-#   "fonttools==4.67.0", "kiwisolver==1.5.1", "packaging==26.3", "pillow==13.0.0",
-#   "pyparsing==3.3.3", "pytz==2026.5", "tzdata==2026.5",
-# ]
-# ///
-"""Regenerate independent fixtures, check their bytes, and optionally compare Rust.
+"""Independent Python reference process: inputs and expected observations.
 
-Run with `uv run validation/oracle.py --check --rust`. Python reference libraries
-execute independently; offline Rust tests read committed fixtures.
+Only tests/run.py launches and compares implementations. This package never
+calls Rust, reads Rust implementation tables, or consumes Rust results.
 """
 
-import argparse
 import collections
 import datetime as dt
 import hashlib
@@ -23,15 +11,11 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 import random
-import re
-import subprocess
-import sys
 import tomllib
 
-import QuantLib as ql
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 SEED = 20261023
 QL_VERSION = "1.44"
 COLUMNS = ["id", "kind", "convention", "start", "end", "ref_start", "ref_end", "frequency", "maturity", "expected", "source"]
@@ -42,10 +26,9 @@ DAY_COUNTS = {
     "thirtye360isda": "ThirtyE360Isda", "oneone": "OneOne", "bus252": "Bus252",
 }
 CALENDAR_VARIANTS = {
-    "target2": "Target2", "luxembourg": "Luxembourg", "uslegacy": "UnitedStates",
-    "usnyse": "UnitedStatesNyse", "usfed": "UnitedStatesFederalReserve",
+    "target2": "Target2", "luxembourg": "Luxembourg", "usnyse": "UnitedStatesNyse", "usfed": "UnitedStatesFederalReserve",
     "uk": "UnitedKingdom", "japan": "Japan", "switzerland": "Switzerland",
-    "hongkong": "HongKong", "singapore": "Singapore",
+    "hongkong": "HongKong", "singapore": "Singapore", "brazilb3": "BrazilB3",
 }
 
 # Selected partial coupons with next coupons before, on and after leap day.
@@ -67,111 +50,37 @@ COUPON_ENDPOINT_CASES = [
 
 
 def iso(date):
+    import QuantLib as ql
     if isinstance(date, str):
         return date
     return date.ISO() if isinstance(date, ql.Date) else date.isoformat()
 
 
 def qdate(date):
+    import QuantLib as ql
     return ql.Date(date.day, date.month, date.year)
 
 
 def add_months(date, months):
+    import QuantLib as ql
     # Uses QuantLib date arithmetic only to select the input reference period.
     shifted = qdate(date) + ql.Period(months, ql.Months)
     return dt.date(shifted.year(), shifted.month(), shifted.dayOfMonth())
 
 
 def reference_packages():
-    script = Path(__file__).read_text().split("# /// script\n", 1)[1].split("# ///", 1)[0]
+    script = (ROOT / "tests/run.py").read_text().split("# /// script\n", 1)[1].split("# ///", 1)[0]
     metadata = tomllib.loads("\n".join(line.removeprefix("# ") for line in script.splitlines()))
-    requirements = [line.strip() for line in (ROOT / "validation/requirements.txt").read_text().splitlines()
+    requirements = [line.strip() for line in (ROOT / "tests/requirements.txt").read_text().splitlines()
                     if line.strip() and not line.startswith("#")]
     assert sorted(requirements) == sorted(metadata["dependencies"]), "requirements.txt differs from PEP 723 pins"
     return dict(requirement.split("==", 1) for requirement in requirements)
 
 
-def enum_inventory(path, name):
-    source = (ROOT / path).read_text()
-    body = re.search(r"pub enum " + re.escape(name) + r"\s*\{(.*?)\n\}", source, re.S)
-    assert body is not None, f"Cannot inventory public enum {name} from {path}"
-    variants = re.findall(r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*,", body.group(1), re.M)
-    assert variants and len(variants) == len(set(variants)), (name, variants)
-    return variants
-
-
-def enforce_catalogue_coverage(rows, operation_metadata):
-    inventories = {
-        "DayCount": enum_inventory("src/day_count/mod.rs", "DayCount"),
-        "Calendar": enum_inventory("src/calendar/mod.rs", "Calendar"),
-        "Roll": enum_inventory("src/roll.rs", "Roll"),
-    }
-    covered = {key: collections.Counter() for key in inventories}
-    calendar_dates = collections.defaultdict(set)
-    for row in rows:
-        kind, name = row[1:3]
-        if kind in ("fraction", "bus252"):
-            covered["DayCount"][DAY_COUNTS["bus252" if kind == "bus252" else name]] += 1
-        elif kind in ("business", "holiday"):
-            covered["Calendar"][CALENDAR_VARIANTS[name]] += 1
-            calendar_dates[(name, kind)].add(row[3])
-        elif kind == "roll_op":
-            covered["Roll"][name.rsplit(":", 1)[1]] += 1
-    for catalogue, variants in inventories.items():
-        assert set(covered[catalogue]) == set(variants), (catalogue, variants, dict(covered[catalogue]))
-    date_methods = set(re.findall(r"pub (?:const )?fn ([A-Za-z0-9_]+)\(", (ROOT / "src/date.rs").read_text()))
-    date_cases = collections.Counter(row[2] for row in rows if row[1] == "date_op")
-    assert set(date_cases) == date_methods, ("Date", sorted(date_methods), dict(date_cases))
-    def public_operations(paths, ignored=()):
-        names = set()
-        for path in paths:
-            for name in re.findall(r"pub (?:const )?fn ([A-Za-z0-9_]+)\(", (ROOT / path).read_text()):
-                if name not in ignored:
-                    names.add(name.removeprefix("try_").removesuffix("_with_policy"))
-        return names
-
-    expected_calendar_ops = public_operations(
-        ("src/calendar/mod.rs", "src/calendar/checked.rs"), ignored=("coverage",))
-    expected_composite_ops = public_operations(("src/calendar/composite.rs",), ignored=("new",))
-    calendar_operations = collections.Counter()
-    composite_operations = collections.defaultdict(collections.Counter)
-    for row in rows:
-        if row[1] == "business":
-            calendar_operations["is_business_day"] += 1
-        elif row[1] == "holiday":
-            calendar_operations["is_holiday"] += 1
-        elif row[1] == "roll_op" and not row[2].startswith("weekends:"):
-            calendar_operations["adjust"] += 1
-        elif row[1] == "calendar_op":
-            operation = row[2].split(":", 1)[1]
-            if "." in operation:
-                combinator, operation = operation.split(".", 1)
-                composite_operations[combinator][operation] += 1
-            else:
-                calendar_operations[operation] += 1
-    assert set(calendar_operations) == expected_calendar_ops, ("Calendar operations", sorted(expected_calendar_ops), dict(calendar_operations))
-    assert set(composite_operations) == {"Composite", "JointBusiness"}, composite_operations
-    for combinator, cases in composite_operations.items():
-        assert set(cases) == expected_composite_ops, (combinator, sorted(expected_composite_ops), dict(cases))
-    for name in CALENDAR_VARIANTS:
-        for kind in ("business", "holiday"):
-            days = {dt.date.fromisoformat(value) for value in calendar_dates[(name, kind)]}
-            required = {dt.date(2020, 1, 1) + dt.timedelta(days=offset) for offset in range(7671)}
-            assert days >= required, f"Incomplete {name} {kind} reference horizon"
-    return {
-        catalogue: {"public_variants": inventories[catalogue], "cases": dict(sorted(covered[catalogue].items()))}
-        for catalogue in inventories
-    } | {"Date": {"public_methods": sorted(date_methods), "cases": dict(sorted(date_cases.items()))},
-         "CalendarOperations": {"public_operations": sorted(expected_calendar_ops), "cases": dict(sorted(calendar_operations.items()))},
-         "CompositeOperations": {"public_operations": sorted(expected_composite_ops),
-                                 "cases": {name: dict(sorted(cases.items())) for name, cases in sorted(composite_operations.items())}},
-         "operations": operation_metadata}
-
-
 def generate():
-    from calendar_references import build_calendar_references
-    from operations_references import append_references
-    from python_daycounts import execute as execute_daycount_references
+    import QuantLib as ql
+    from .calendar import build_calendar_references, append_references
+    from .day_count import execute as execute_daycount_references
 
     python_packages = reference_packages()
     for package, pinned in python_packages.items():
@@ -279,8 +188,8 @@ def generate():
     assert set(calendar_references) == set(CALENDAR_VARIANTS), "Missing named calendar references"
     start, end = dt.date(2020, 1, 1), dt.date(2040, 12, 31)
     for name, calendar in calendar_references.items():
-        date = start
-        while date <= end:
+        date = calendar.start
+        while date <= calendar.end:
             emit("business", name, date, expected=calendar.is_business_day(date), source="calendar-reference")
             emit("holiday", name, date, expected=calendar.is_holiday(date), source="calendar-reference")
             date += dt.timedelta(days=1)
@@ -339,14 +248,13 @@ def generate():
         "format_version": 1,
         "python_reference_packages": python_packages,
         "seed": SEED,
-        "generator": "validation/oracle.py",
-        "fixture": "validation/oracle.tsv",
-        "fixture_sha256": hashlib.sha256(tsv.encode()).hexdigest(),
+        "generator": "tests/run.py (independent Python worker)",
+        "reference_sha256": hashlib.sha256(tsv.encode()).hexdigest(),
         "rows": len(rows),
         "counts_by_convention": dict(sorted(counts.items())),
         "counts_by_kind": dict(sorted(collections.Counter(row[1] for row in rows).items())),
         "day_count_variants": 11,
-        "coverage": enforce_catalogue_coverage(rows, operation_metadata),
+        "operations": operation_metadata,
         "counts_by_day_count": {name: sum(values.values()) for name, values in sorted(day_count_sources.items())},
         "day_count_reference_counts": {name: dict(sorted(values.items())) for name, values in sorted(day_count_sources.items())},
         "sources": {
@@ -396,54 +304,24 @@ def generate():
     return tsv, json.dumps(manifest, indent=2, sort_keys=True) + "\n"
 
 
-def compare_rust(tsv):
-    result = subprocess.run(["cargo", "run", "--quiet", "--example", "oracle_probe"],
-                            cwd=ROOT, input=tsv, text=True, capture_output=True)
-    if result.returncode:
-        print(result.stderr, file=sys.stderr)
-        raise SystemExit(result.returncode)
-    values = result.stdout.splitlines()
-    expected_rows = tsv.splitlines()[1:]
-    assert len(values) == len(expected_rows), (len(values), len(expected_rows), result.stderr)
-    failures = []
-    for row, response in zip(expected_rows, values):
-        fields = row.split("\t")
-        case_id, actual = response.split("\t", 1)
-        assert case_id == fields[0], (case_id, fields[0])
-        try:
-            difference = abs(float(actual) - float(fields[9]))
-            if not difference <= 1e-12:
-                failures.append((row, response))
-        except ValueError:
-            failures.append((row, response))
-    for row, response in failures[:30]:
-        print(f"MISMATCH {row}\n    Rust: {response}", file=sys.stderr)
-    if failures:
-        categories = collections.Counter(row.split("\t")[1] for row, _ in failures)
-        operations = collections.Counter(":".join(row.split("\t")[1:3]) for row, _ in failures)
-        print("Failure kinds: " + json.dumps(dict(categories), sort_keys=True), file=sys.stderr)
-        print("Failure operations: " + json.dumps(dict(operations), sort_keys=True), file=sys.stderr)
-        raise SystemExit(f"{len(failures)} of {len(values)} independent oracle comparisons failed")
-    print(f"Rust matches {len(values)} independent oracle fixtures (tolerance 1e-12)")
+def cases():
+    """Emit inputs and independently calculated outcomes to the controller.
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="Verify committed fixtures without writing")
-    parser.add_argument("--rust", action="store_true", help="Execute Rust probe and compare every fixture")
-    args = parser.parse_args()
-    tsv, manifest = generate()
-    for name, content in [("oracle.tsv", tsv), ("oracle.json", manifest)]:
-        path = ROOT / "validation" / name
-        if args.check:
-            assert path.read_text() == content, f"Fixture differs; run uv run validation/oracle.py: {path}"
-        else:
-            path.write_text(content)
-    print(f"{'Verified' if args.check else 'Generated'} {len(tsv.splitlines()) - 1} fixtures with executed Python reference libraries; seed {SEED}")
-    print("DayCount reference cases: " + json.dumps(json.loads(manifest)["counts_by_day_count"], sort_keys=True))
-    if args.rust:
-        compare_rust(tsv)
-
-
-if __name__ == "__main__":
-    main()
+    This worker never invokes the Rust implementation, reads its tables, or
+    receives its outputs. The controller sends Rust only id/api/args.
+    """
+    from . import date, roll, calendar, day_count
+    tsv, metadata = generate()
+    for line in tsv.splitlines()[1:]:
+        fields = line.split("\t")
+        kind, operation = fields[1:3]
+        needs_calendar = (kind in ("business", "holiday", "bus252", "calendar_op")
+                          or (kind == "roll_op" and not operation.startswith("weekends:")))
+        yield {"id": "reference-" + fields[0], "api": "@reference",
+               "args": {"row": "|".join(fields[:9])},
+               "expected": "Ok:f64:" + fields[9], "source": fields[10],
+               "calendars": needs_calendar}
+    for module in (date, roll, calendar, day_count):
+        for case in module.cases():
+            yield {**case, "calendars": case["api"].startswith("calendar::")}
+    yield {"metadata": json.loads(metadata)}

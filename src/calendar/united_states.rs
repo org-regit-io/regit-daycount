@@ -3,8 +3,8 @@
 
 //! United States market calendars: NYSE and Federal Reserve Bank operations.
 //!
-//! [`is_holiday`] is the NYSE full-day closure snapshot for 2020–2040.
-//! [`is_federal_reserve_holiday`] implements the separate Reserve Bank rules
+//! [`try_is_nyse_holiday`] queries NYSE full-day trading closures.
+//! [`try_is_federal_reserve_holiday`] queries separate Reserve Bank rules
 //! over that same available range. Neither represents all US settlement venues.
 //! Early closing sessions count as business days in this date-only model.
 //!
@@ -31,6 +31,31 @@
 
 use crate::date::Date;
 
+/// Complete primary-source verified NYSE annual horizon (inclusive).
+pub const NYSE_VERIFIED_YEARS: (i32, i32) = (2026, 2028);
+/// Date the complete NYSE schedules were checked.
+pub const NYSE_VERIFIED_ON: &str = "2026-10-23";
+/// Complete primary-source verified Reserve Bank annual horizon (inclusive).
+pub const FEDERAL_RESERVE_VERIFIED_YEARS: (i32, i32) = (2026, 2030);
+/// Date the complete Reserve Bank schedules were checked.
+pub const FEDERAL_RESERVE_VERIFIED_ON: &str = "2026-10-23";
+
+/// Query an NYSE full-day closure using verified coverage.
+///
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_nyse_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::UnitedStatesNyse)
+}
+
+/// Query a Federal Reserve Bank closure using verified coverage.
+///
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_federal_reserve_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::UnitedStatesFederalReserve)
+}
+
 // ─── Snapshot metadata ───────────────────────────────────────────────────────
 
 /// Date of the original NYSE holiday-list snapshot embedded in this
@@ -38,21 +63,19 @@ use crate::date::Date;
 /// the later independent verification horizon is in [`super::coverage`].
 pub const SNAPSHOT_DATE: &str = "2026-05-23";
 
-/// Inclusive `(first_year, last_year)` year range covered by [`HOLIDAYS`].
-/// Outside this range, [`is_holiday`] returns `false` — the snapshot has
-/// nothing to say about dates the caller has not opted into.
+/// Inclusive available year range. Checked queries reject dates outside it.
 pub const COVERAGE: (i32, i32) = (2020, 2040);
 
 // ─── Holiday table ───────────────────────────────────────────────────────────
 
 /// Every embedded NYSE full-day holiday in
-/// `COVERAGE.0..=COVERAGE.1`, sorted ascending so [`is_holiday`] can binary
+/// `COVERAGE.0..=COVERAGE.1`, sorted ascending so `is_holiday` can binary
 /// search the table.
 ///
 /// Rows are observed closure dates, sorted for binary search. A Saturday
 /// New Year's Day has no Friday observation. Entries beyond the verified
 /// horizon are projections and may change with future notices.
-pub const HOLIDAYS: &[(i32, u8, u8)] = &[
+pub(crate) const HOLIDAYS: &[(i32, u8, u8)] = &[
     // ─── 2020 ────────────────────────────────────────────────────────────
     (2020, 1, 1),   // 2020-01-01 — New Year's Day
     (2020, 1, 20),  // 2020-01-20 — Martin Luther King Jr. Day
@@ -283,30 +306,7 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
 
 // ─── Lookup ──────────────────────────────────────────────────────────────────
 
-/// Returns `true` if `date` is a NYSE full-day holiday under the
-/// embedded snapshot.
-///
-/// The decision is a binary search over [`HOLIDAYS`]. Dates outside the
-/// snapshot's [`COVERAGE`] window return `false` — the snapshot has nothing
-/// to say about them, and the caller is expected to treat such a date as a
-/// regular business day (or to extend the snapshot itself). Discretionary
-/// closures published in NYSE notices are not modelled; see the module
-/// docstring.
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::calendar::united_states::is_holiday;
-///
-/// // Independence Day 2024 is a NYSE holiday.
-/// assert!( is_holiday(Date::ymd(2024, 7, 4).unwrap()));
-///
-/// // The Friday immediately after is a regular trading day.
-/// assert!(!is_holiday(Date::ymd(2024, 7, 5).unwrap()));
-/// ```
-#[must_use]
-pub fn is_holiday(date: Date) -> bool {
+pub(crate) fn is_holiday(date: Date) -> bool {
     let (lo, hi) = COVERAGE;
     if date.year() < lo || date.year() > hi {
         return false;
@@ -315,13 +315,7 @@ pub fn is_holiday(date: Date) -> bool {
     HOLIDAYS.binary_search(&key).is_ok()
 }
 
-/// True for a Federal Reserve Bank operating holiday within 2020–2040.
-///
-/// Saturday holidays remain on Saturday; only Sunday moves to Monday.
-/// Good Friday is not a Reserve Bank holiday. Dates outside the available
-/// range return `false`; prefer [`super::try_is_holiday`] for checked use.
-#[must_use]
-pub fn is_federal_reserve_holiday(date: Date) -> bool {
+pub(crate) fn is_federal_reserve_holiday(date: Date) -> bool {
     use crate::date::Weekday;
     let year = date.year();
     if year < COVERAGE.0 || year > COVERAGE.1 {
@@ -539,7 +533,7 @@ mod tests {
     // module docstring (Meeus Easter for Good Friday, `nth_weekday_of_month`
     // for the Monday/Thursday rules, the standard NYSE weekend-shift
     // convention for fixed-date holidays) and compares it row-for-row to
-    // [`HOLIDAYS`]. If a row drifts — typo, mis-edited year, missing
+    // `HOLIDAYS`. If a row drifts — typo, mis-edited year, missing
     // Juneteenth, an out-of-order Good Friday — this test fails and prints
     // the offending pair, so the snapshot cannot silently diverge.
 
@@ -643,5 +637,124 @@ mod tests {
                 "row {i}: table has {got:?}, rule derives {want:?}",
             );
         }
+    }
+    // NYSE complete 2026/2027/2028 full-day closures, including no 2028 New Year observation.
+    // Complete primary schedules linked above, checked 2026-10-23.
+    #[test]
+    fn complete_nyse_schedules_match_primary_sources() {
+        let expected = &[
+            // 2026
+            (2026, 1, 1),
+            (2026, 1, 19),
+            (2026, 2, 16),
+            (2026, 4, 3),
+            (2026, 5, 25),
+            (2026, 6, 19),
+            (2026, 7, 3),
+            (2026, 9, 7),
+            (2026, 11, 26),
+            (2026, 12, 25),
+            // 2027
+            (2027, 1, 1),
+            (2027, 1, 18),
+            (2027, 2, 15),
+            (2027, 3, 26),
+            (2027, 5, 31),
+            (2027, 6, 18),
+            (2027, 7, 5),
+            (2027, 9, 6),
+            (2027, 11, 25),
+            (2027, 12, 24),
+            // 2028
+            (2028, 1, 17),
+            (2028, 2, 21),
+            (2028, 4, 14),
+            (2028, 5, 29),
+            (2028, 6, 19),
+            (2028, 7, 4),
+            (2028, 9, 4),
+            (2028, 11, 23),
+            (2028, 12, 25),
+        ];
+        super::super::assert_verified_schedule(
+            super::super::Calendar::UnitedStatesNyse,
+            2026,
+            2028,
+            expected,
+        );
+    }
+
+    // Federal Reserve complete 2026-2030 table with its Saturday/Sunday observation footnotes.
+    // Complete primary schedules linked above, checked 2026-10-23.
+    #[test]
+    fn complete_federalreserve_schedules_match_primary_sources() {
+        let expected = &[
+            // 2026
+            (2026, 1, 1),
+            (2026, 1, 19),
+            (2026, 2, 16),
+            (2026, 5, 25),
+            (2026, 6, 19),
+            (2026, 7, 4),
+            (2026, 9, 7),
+            (2026, 10, 12),
+            (2026, 11, 11),
+            (2026, 11, 26),
+            (2026, 12, 25),
+            // 2027
+            (2027, 1, 1),
+            (2027, 1, 18),
+            (2027, 2, 15),
+            (2027, 5, 31),
+            (2027, 6, 19),
+            (2027, 7, 5),
+            (2027, 9, 6),
+            (2027, 10, 11),
+            (2027, 11, 11),
+            (2027, 11, 25),
+            (2027, 12, 25),
+            // 2028
+            (2028, 1, 1),
+            (2028, 1, 17),
+            (2028, 2, 21),
+            (2028, 5, 29),
+            (2028, 6, 19),
+            (2028, 7, 4),
+            (2028, 9, 4),
+            (2028, 10, 9),
+            (2028, 11, 11),
+            (2028, 11, 23),
+            (2028, 12, 25),
+            // 2029
+            (2029, 1, 1),
+            (2029, 1, 15),
+            (2029, 2, 19),
+            (2029, 5, 28),
+            (2029, 6, 19),
+            (2029, 7, 4),
+            (2029, 9, 3),
+            (2029, 10, 8),
+            (2029, 11, 12),
+            (2029, 11, 22),
+            (2029, 12, 25),
+            // 2030
+            (2030, 1, 1),
+            (2030, 1, 21),
+            (2030, 2, 18),
+            (2030, 5, 27),
+            (2030, 6, 19),
+            (2030, 7, 4),
+            (2030, 9, 2),
+            (2030, 10, 14),
+            (2030, 11, 11),
+            (2030, 11, 28),
+            (2030, 12, 25),
+        ];
+        super::super::assert_verified_schedule(
+            super::super::Calendar::UnitedStatesFederalReserve,
+            2026,
+            2030,
+            expected,
+        );
     }
 }

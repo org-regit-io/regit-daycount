@@ -20,7 +20,7 @@
 //!
 //! Where `days_between` is the signed count of days from `start` to `end`,
 //! end-exclusive, start-inclusive (the standard interval convention).
-//! The result is positive for `start <= end` and negative otherwise; the
+//! The result is zero for equal dates and otherwise has the interval's sign; the
 //! crate does not reject inverted intervals because some callers compute
 //! reverse-period accruals.
 //!
@@ -65,12 +65,7 @@ pub fn fraction(start: Date, end: Date) -> f64 {
 mod tests {
     use super::*;
 
-    // The tolerance 1e-12 is the working slack used throughout this crate's
-    // numeric assertions: it is loose enough that a benign last-bit rounding
-    // never causes a spurious failure, and tight enough that any drift large
-    // enough to mis-state a cashflow at the cent level (≥ 1e-9 on a unit
-    // notional) is caught immediately. We deliberately do not assert against
-    // `f64::EPSILON`; the goal is auditable, not maximally-tight.
+    // Absolute year-fraction tolerance for these worked examples.
     const TOL: f64 = 1e-12;
 
     // ─── ISDA worked example ─────────────────────────────────────────────

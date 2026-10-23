@@ -7,7 +7,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 1.x     | Yes       |
+| 2.x     | Yes |
+| 1.x     | Legacy; migrate to the checked 2.x contract |
 
 ## Reporting a Vulnerability
 

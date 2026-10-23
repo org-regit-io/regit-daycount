@@ -1,128 +1,36 @@
 // Copyright 2026 Regit.io — Nicolas Koenig
 // SPDX-License-Identifier: Apache-2.0
 
-//! Japan — Japan Exchange Group (JPX) trading calendar and the Japanese
-//! National Holidays Act.
+//! Tokyo Stock Exchange cash-market holidays.
 //!
-//! The Tokyo Stock Exchange (operated by JPX) closes on every national
-//! holiday named in the *Act on National Holidays* (国民の祝日に関する
-//! 法律, *kokumin no shukujitsu ni kansuru hōritsu*) plus a year-end /
-//! New Year exchange-specific closure on **2 January, 3 January, and 31
-//! December**. Two features of the Japanese statute make the calendar a
-//! dated snapshot rather than a closed-form rule:
+//! JPX's complete 2026 and 2027 lists were checked on 2026-10-23:
+//! <https://www.jpx.co.jp/english/corporate/about-jpx/calendar/index.html>.
+//! They include national holidays, substitutes, the 2026-09-22 bridge holiday,
+//! and exchange closures on 2 January, 3 January and 31 December.
+//! Derivatives holiday trading follows a separate JPX schedule and is excluded.
 //!
-//! 1. Two holidays — the **Vernal Equinox Day** (*Shunbun no Hi*, around
-//!    20–21 March) and the **Autumnal Equinox Day** (*Shubun no Hi*,
-//!    around 22–23 September) — are fixed each year by Cabinet Office
-//!    proclamation from the astronomical equinox computed by the National
-//!    Astronomical Observatory of Japan. They are *not* derivable from a
-//!    closed-form rule.
-//! 2. Three holidays use the *Happy Monday* rule (a fixed *n*-th Monday
-//!    of a month): **Coming of Age Day** (2nd Mon Jan), **Marine Day**
-//!    (3rd Mon Jul), **Respect for the Aged Day** (3rd Mon Sep), and
-//!    **Health and Sports Day** (2nd Mon Oct).
-//!
-//! ## Holiday rules
-//!
-//! ```text
-//! New Year's Day                  1 Jan        (statutory)
-//! JPX year-end / New Year break   2 Jan, 3 Jan (JPX-specific)
-//! Coming of Age Day               2nd Mon Jan
-//! National Foundation Day         11 Feb
-//! Emperor's Birthday              23 Feb       (since 2020)
-//! Vernal Equinox Day              20 or 21 Mar (Cabinet Office table)
-//! Showa Day                       29 Apr
-//! Constitution Memorial Day       3 May
-//! Greenery Day                    4 May
-//! Children's Day                  5 May
-//! Marine Day                      3rd Mon Jul
-//! Mountain Day                    11 Aug
-//! Respect for the Aged Day        3rd Mon Sep
-//! Autumnal Equinox Day            22 or 23 Sep (Cabinet Office table)
-//! Health and Sports Day           2nd Mon Oct
-//! Culture Day                     3 Nov
-//! Labor Thanksgiving Day          23 Nov
-//! JPX year-end                    31 Dec       (JPX-specific)
-//! ```
-//!
-//! ## Olympic-year specials (2020, 2021)
-//!
-//! The Tokyo 2020 Olympics, postponed to 2021, moved several holidays in
-//! both years:
-//!
-//! ```text
-//! 2020   Marine Day   → 23 Jul    (opening-ceremony eve)
-//! 2020   Sports Day   → 24 Jul    (opening day; renamed from Health & Sports)
-//! 2020   Mountain Day → 10 Aug    (closing-ceremony day)
-//! 2021   Marine Day   → 22 Jul
-//! 2021   Sports Day   → 23 Jul
-//! 2021   Mountain Day → 8 Aug
-//! ```
-//!
-//! ## Substitution rule (*furikae kyūjitsu*)
-//!
-//! When a national holiday falls on a Sunday, the following Monday becomes
-//! a *substitute holiday*; if that Monday is itself already a holiday, the
-//! substitute slides forward to the next non-holiday weekday. JPX year-end
-//! exchange closures (2 Jan, 3 Jan, 31 Dec) are *not* statutory holidays
-//! and do not generate substitutes when they fall on a Sunday.
-//!
-//! ## People's Holiday rule (*kokumin no shukujitsu*)
-//!
-//! A non-holiday weekday sandwiched between two national holidays becomes
-//! itself a holiday. Since the 2007 elevation of 4 May to Greenery Day,
-//! this rule fires only when Respect for the Aged Day (3rd Mon Sep) and
-//! the Autumnal Equinox Day are separated by exactly one weekday — i.e.
-//! when Respect for the Aged Day is the 21st of September *and* the
-//! autumnal equinox is the 23rd. Within this snapshot's coverage that
-//! occurs in **2026, 2032, and 2037**, with 22 (resp. 21, 22) September
-//! observed as a People's Holiday.
-//!
-//! ## Snapshot
-//!
-//! - Source: Japan Exchange Group published trading calendar (Tokyo Stock
-//!   Exchange) cross-checked against the Cabinet Office (*Naikaku-fu*)
-//!   national-holidays table.
-//! - Snapshot date: see [`SNAPSHOT_DATE`].
-//! - Coverage: see [`COVERAGE`] — 2020 through 2040 inclusive, 21 years,
-//!   432 entries.
-//!
-//! Out-of-coverage dates return `false` from [`is_holiday`]; the caller is
-//! responsible for refusing to settle a cashflow beyond this horizon
-//! against the Japan calendar.
-//!
-//! # Verification status
-//!
-//! No complete primary-source annual audit has been retained for this
-//! table. Earlier prose asserted broader verification than its evidence
-//! established. Rule-derived regression tests check internal consistency;
-//! they do not establish market agreement. All available years currently
-//! require [`super::CoveragePolicy::AllowProjected`] in the checked APIs.
-//! Consult [`super::coverage`] for machine-readable horizons and refresh
-//! annual schedules from the primary sources before operational use.
-//!
-//! # References
-//!
-//! - *Act on National Holidays* (国民の祝日に関する法律), Law No. 178 of
-//!   1948, as amended — the statutory list of *kokumin no shukujitsu*.
-//! - Cabinet Office (Government of Japan), annual *koyomi yōkō*
-//!   (calendar gazette) proclaiming the Vernal and Autumnal Equinox Days
-//!   for the coming year, derived from the National Astronomical
-//!   Observatory of Japan's equinox tables.
-//! - Japan Exchange Group, *Trading Calendar of the Tokyo Stock Exchange*
-//!   — defines the additional 2 January, 3 January and 31 December
-//!   exchange closures.
+//! Other available years are unaudited historical rows or projections.
 
 use crate::date::Date;
 
-/// Date of the JPX trading-calendar snapshot embedded in this module,
-/// `YYYY-MM-DD`.
+/// Complete primary-source verified annual horizon (inclusive).
+pub const VERIFIED_YEARS: (i32, i32) = (2026, 2027);
+/// Date the primary annual schedules were checked.
+pub const VERIFIED_ON: &str = "2026-10-23";
+
+/// Query a named holiday with verified market coverage.
+///
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::Japan)
+}
+
+/// Original data-generation date, `YYYY-MM-DD`. This is not the
+/// primary-source verification date; use [`VERIFIED_ON`] or [`super::coverage`].
 pub const SNAPSHOT_DATE: &str = "2026-05-23";
 
-/// Inclusive `(first, last)` years covered by [`HOLIDAYS`].
-///
-/// [`is_holiday`] returns `false` for any date outside this range —
-/// the snapshot has nothing to say about it.
+/// Inclusive available year range. Checked queries reject dates outside it.
 pub const COVERAGE: (i32, i32) = (2020, 2040);
 
 /// JPX / Japan-statutory holiday table, sorted ascending by `(year,
@@ -138,7 +46,7 @@ pub const COVERAGE: (i32, i32) = (2020, 2040);
 ///
 /// Sorted; binary-searchable.
 #[rustfmt::skip]
-pub const HOLIDAYS: &[(i32, u8, u8)] = &[
+pub(crate) const HOLIDAYS: &[(i32, u8, u8)] = &[
     // ─── 2020 (Tokyo Olympics — postponed; calendar already adopted) ─────
     (2020,  1,  1), // 2020-01-01 — New Year's Day (Ganjitsu)
     (2020,  1,  2), // 2020-01-02 — JPX year-end / New Year break
@@ -636,33 +544,7 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2040, 12, 31), // 2040-12-31 — JPX year-end
 ];
 
-/// True if `date` is a Japan / JPX trading-calendar holiday in this
-/// snapshot's coverage window.
-///
-/// The lookup is a binary search over [`HOLIDAYS`], which is sorted
-/// ascending. Dates outside [`COVERAGE`] return `false`: the snapshot
-/// has nothing to say about them. This permissive legacy result is not
-/// evidence that the market is open. Use [`super::try_is_holiday`] to
-/// reject dates outside the selected coverage policy.
-///
-/// Weekends are not classified as holidays here — they are handled by
-/// the caller's business-day predicate (see the `is_business_day`
-/// dispatcher in [`crate::calendar`]).
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::calendar::japan;
-///
-/// // New Year's Day 2024 is a JPX holiday.
-/// assert!(japan::is_holiday(Date::ymd(2024, 1, 1).unwrap()));
-///
-/// // 2024-01-04 (Thursday) is the first trading day of 2024 — not a holiday.
-/// assert!(!japan::is_holiday(Date::ymd(2024, 1, 4).unwrap()));
-/// ```
-#[must_use]
-pub fn is_holiday(date: Date) -> bool {
+pub(crate) fn is_holiday(date: Date) -> bool {
     let key = (date.year(), date.month(), date.day());
     HOLIDAYS.binary_search(&key).is_ok()
 }
@@ -820,5 +702,56 @@ mod tests {
         assert!(is_holiday(Date::ymd(2026, 9, 22).unwrap()));
         assert!(is_holiday(Date::ymd(2032, 9, 21).unwrap()));
         assert!(is_holiday(Date::ymd(2037, 9, 22).unwrap()));
+    }
+    // Complete primary schedules linked in the module documentation, checked
+    // 2026-10-23. This compares every date, including open days and weekends.
+    #[test]
+    fn complete_verified_schedules_match_primary_sources() {
+        let expected = &[
+            // 2026
+            (2026, 1, 1),
+            (2026, 1, 2),
+            (2026, 1, 3),
+            (2026, 1, 12),
+            (2026, 2, 11),
+            (2026, 2, 23),
+            (2026, 3, 20),
+            (2026, 4, 29),
+            (2026, 5, 3),
+            (2026, 5, 4),
+            (2026, 5, 5),
+            (2026, 5, 6),
+            (2026, 7, 20),
+            (2026, 8, 11),
+            (2026, 9, 21),
+            (2026, 9, 22),
+            (2026, 9, 23),
+            (2026, 10, 12),
+            (2026, 11, 3),
+            (2026, 11, 23),
+            (2026, 12, 31),
+            // 2027
+            (2027, 1, 1),
+            (2027, 1, 2),
+            (2027, 1, 3),
+            (2027, 1, 11),
+            (2027, 2, 11),
+            (2027, 2, 23),
+            (2027, 3, 21),
+            (2027, 3, 22),
+            (2027, 4, 29),
+            (2027, 5, 3),
+            (2027, 5, 4),
+            (2027, 5, 5),
+            (2027, 7, 19),
+            (2027, 8, 11),
+            (2027, 9, 20),
+            (2027, 9, 23),
+            (2027, 10, 11),
+            (2027, 11, 3),
+            (2027, 11, 23),
+            (2027, 12, 31),
+        ];
+        super::super::assert_verified_schedule(super::super::Calendar::Japan, 2026, 2027, expected);
     }
 }

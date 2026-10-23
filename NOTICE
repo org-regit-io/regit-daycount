@@ -6,10 +6,12 @@ Licensed under the Apache License, Version 2.0.
 This product is part of Regit OS, the operating system for investment products.
 https://www.regit.io
 
-Holiday tables and validation fixtures contain factual calendar dates and
-independently computed reference results. Calendar identities, verified and
-projected horizons, primary sources, and the pinned development reference
-implementations are documented in SPEC.md and validation/oracle.json.
+Holiday tables contain factual calendar dates. Calendar identities, verified
+and projected horizons, primary sources, and independent validation scope are
+documented in SPEC.md. The source repository pins development references in
+tests/requirements.txt; generated provenance and comparison evidence are written
+under target/test-results/. Development reference artifacts are not shipped in
+the crates.io archive.
 
 The development oracle uses QuantLib, FinancePy, Python holidays and supporting
 Python packages. The Rust library does not bundle or link these implementations;

@@ -15,31 +15,11 @@
 //!
 //! # Algorithm
 //!
-//! ```text
-//! if start.year == end.year:
-//!     d     = days_between(start, end)
-//!     denom = 366 if is_leap_year(start.year) else 365
-//!     return d / denom
-//!
-//! else (multi-year span):
-//!     sum = 0.0
-//!     for y in start.year ..= end.year:
-//!         sub_start = max(start, Date(y,     1, 1))
-//!         sub_end   = min(end,   Date(y + 1, 1, 1))
-//!         d_y       = days_between(sub_start, sub_end)
-//!         if d_y > 0:
-//!             denom = 366 if is_leap_year(y) else 365
-//!             sum  += d_y / denom
-//!     return sum
-//! ```
-//!
-//! All day counts use `Date::days_between` — signed, end-exclusive,
-//! start-inclusive — so the per-year contributions cover the half-open
-//! interval `[Date(y, 1, 1), Date(y + 1, 1, 1))` (i.e. the whole calendar
-//! year `y`) and the partial-year boundaries fall out of the
-//! `max` / `min` clamp without an additional case. The same-year case is
-//! fast-pathed: it is the common one and skips the loop and the two
-//! `ymd_unchecked` constructions.
+//! A same-year interval is its actual day count divided by that year's
+//! length. For a multi-year interval, add the fraction of the first year,
+//! one for each intervening full year, and the fraction of the last year.
+//! All subintervals include their start and exclude their end. This requires
+//! only two year boundaries, both within the supported date range.
 //!
 //! # Inverted intervals
 //!
@@ -77,8 +57,8 @@ use crate::date::Date;
 ///
 /// The same-year case is fast-pathed: the whole interval is divided by
 /// 366 or 365 depending on whether the year is a Gregorian leap year. The
-/// multi-year case splits at every January 1 the interval crosses, divides
-/// each sub-period by its own per-year denominator, and sums. Inverted
+/// multi-year case adds the first partial year, intervening full years,
+/// and the last partial year. Inverted
 /// intervals (`start > end`) return the negation of the forward fraction;
 /// see the module-level docstring for the rationale.
 ///
@@ -111,7 +91,7 @@ pub fn fraction(start: Date, end: Date) -> f64 {
     let start_year = start.year();
     let end_year = end.year();
 
-    // Same-year fast path: one division, no `ymd_unchecked` constructions.
+    // A same-year interval has one denominator.
     if start_year == end_year {
         let d = f64::from(start.days_between(end));
         let denom = if Date::is_leap_year(start_year) {
@@ -122,48 +102,31 @@ pub fn fraction(start: Date, end: Date) -> f64 {
         return d / denom;
     }
 
-    // Multi-year span. Iterate `y` over every calendar year the interval
-    // touches; for each year clamp the sub-interval to `[Date(y, 1, 1),
-    // Date(y + 1, 1, 1))` and accumulate `d_y / denom_y`. `y + 1` is safe
-    // because year range is `[1583, 9999]` and `end_year <= 9999`, so the
-    // worst-case `Date::ymd_unchecked(10_000, 1, 1)` is constructed but
-    // never observed by a caller (it only feeds `days_between` as a
-    // clamp endpoint).
-    let mut sum = 0.0_f64;
-    for y in start_year..=end_year {
-        let year_start = Date::ymd_unchecked(y, 1, 1);
-        let year_end = Date::ymd_unchecked(y + 1, 1, 1);
-        let sub_start = if start > year_start {
-            start
-        } else {
-            year_start
-        };
-        let sub_end = if end < year_end { end } else { year_end };
-        let d_y = sub_start.days_between(sub_end);
-        if d_y > 0 {
-            let denom = if Date::is_leap_year(y) {
-                366.0_f64
-            } else {
-                365.0_f64
-            };
-            sum += f64::from(d_y) / denom;
-        }
-    }
-    sum
+    // start_year < end_year, so both constructed dates lie within the
+    // valid Date range, including when the accrual ends in year 9999.
+    let first_year_end = Date::ymd_unchecked(start_year + 1, 1, 1);
+    let last_year_start = Date::ymd_unchecked(end_year, 1, 1);
+    let first_denominator = if Date::is_leap_year(start_year) {
+        366.0
+    } else {
+        365.0
+    };
+    let last_denominator = if Date::is_leap_year(end_year) {
+        366.0
+    } else {
+        365.0
+    };
+    let complete_years = end_year - start_year - 1;
+    f64::from(complete_years)
+        + f64::from(start.days_between(first_year_end)) / first_denominator
+        + f64::from(last_year_start.days_between(end)) / last_denominator
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // The tolerance 1e-12 is the working slack used throughout this crate's
-    // numeric assertions: it is loose enough that a benign last-bit rounding
-    // never causes a spurious failure, and tight enough that any drift large
-    // enough to mis-state a cashflow at the cent level (≥ 1e-9 on a unit
-    // notional) is caught immediately. We deliberately do not assert against
-    // `f64::EPSILON`; the goal is auditable, not maximally-tight. The ISDA
-    // worked example below matches its printed 9-dp number to well inside
-    // 1e-12, so this tolerance is generous for the present module.
+    // Absolute year-fraction tolerance for these worked examples.
     const TOL: f64 = 1e-12;
 
     // ─── ISDA worked example ─────────────────────────────────────────────
@@ -292,5 +255,17 @@ mod tests {
             (f - 2.0).abs() < TOL,
             "multi-year 2023→2025: got {f}, want 2.0",
         );
+    }
+
+    #[test]
+    fn supported_date_boundaries_do_not_construct_year_10000() {
+        let first = Date::ymd(1583, 1, 1).unwrap();
+        let last = Date::ymd(9999, 12, 31).unwrap();
+        let expected = 8416.0 + 364.0 / 365.0;
+        let actual = fraction(first, last);
+        assert!((actual - expected).abs() < 1e-12);
+        assert!((fraction(last, first) + expected).abs() < 1e-12);
+        let start = Date::ymd(9998, 12, 31).unwrap();
+        assert!((fraction(start, last) - 1.0).abs() < 1e-12);
     }
 }
