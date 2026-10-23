@@ -28,28 +28,23 @@
 //!
 //! # Dispatchers
 //!
-//! Two free functions dispatch on the [`DayCount`] enum:
+//! [`try_fraction`] is the checked entry point. [`DayCountContext`] supplies
+//! the coupon period for Act/365L and Act/Act ICMA, and an explicit maturity
+//! flag for 30E/360 ISDA. Missing or invalid context is a [`DayCountError`].
+//! [`try_fraction_with_business_days`] additionally accepts the predicate
+//! required by Bus/252.
 //!
-//! - [`fraction`] — the common entry point: takes `(start, end, basis)` and
-//!   returns the year fraction. Three variants need information the
-//!   dispatcher cannot supply on its own:
-//!   - [`DayCount::ActActIcma`] needs a reference period and frequency —
-//!     use [`year_fraction_with_freq`] instead.
-//!   - [`DayCount::Bus252`] needs a business-day predicate — call
-//!     [`bus_252::fraction`] directly with the predicate from your
-//!     calendar.
-//!   - [`DayCount::ThirtyE360Isda`] takes an `end_is_maturity` flag — the
-//!     dispatcher defaults it to `false`; for the maturity case call
-//!     [`thirty_e_360_isda::fraction`] directly.
+//! The source-compatible [`fraction`] wrapper returns `NaN` whenever the
+//! checked entry point cannot calculate without context. In particular,
+//! Act/365L and 30E/360 ISDA no longer invent schedule or maturity defaults.
+//! [`year_fraction_with_freq`] supplies coupon context for both Act/365L
+//! and Act/Act ICMA; its checked equivalent is [`try_year_fraction_with_freq`].
 //!
-//!   When the dispatcher cannot compute (the first two cases above), it
-//!   returns `f64::NAN` so the error propagates loudly through arithmetic
-//!   rather than silently being absorbed as `0.0`.
-//!
-//! - [`year_fraction_with_freq`] — dispatches `ActActIcma` to its full
-//!   five-argument signature; for every other variant the `freq`,
-//!   `ref_start`, and `ref_end` are ignored and the call delegates to
-//!   [`fraction`].
+//! Reverse and equal endpoints follow each convention's arithmetic. The
+//! schedule-aware conventions use an ordered coupon period even for reversed
+//! accruals. In particular, 1/1 always returns one; 30/360 Bond Basis need
+//! not be antisymmetric, and 30E/360 ISDA can return a nonzero fraction for
+//! equal February maturity endpoints because only the first day is adjusted.
 //!
 //! # References
 //!
@@ -105,6 +100,9 @@ pub enum DayCount {
 
 // ─── Per-convention submodules ───────────────────────────────────────────────
 
+pub mod error;
+pub use error::DayCountError;
+
 pub mod act_360;
 pub mod act_365f;
 pub mod act_365l;
@@ -119,24 +117,133 @@ pub mod thirty_e_360_isda;
 
 // ─── Dispatchers ─────────────────────────────────────────────────────────────
 
+/// A single ordered reference coupon period, supplied by the caller.
+///
+/// `frequency` is the positive number of coupon payments per year. Both
+/// accrual endpoints must lie within `[start, end]`. The caller remains
+/// responsible for supplying the contractual schedule and for decomposing
+/// irregular coupons that span multiple reference periods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CouponPeriod {
+    /// Start of the reference coupon period.
+    pub start: Date,
+    /// End of the reference coupon period (the next coupon date).
+    pub end: Date,
+    /// Number of coupon payments per year.
+    pub frequency: u8,
+}
+
+impl CouponPeriod {
+    pub(crate) fn validate(self, start: Date, end: Date) -> Result<(), DayCountError> {
+        if self.frequency == 0 {
+            return Err(DayCountError::ZeroFrequency);
+        }
+        if self.start >= self.end {
+            return Err(DayCountError::InvalidReferencePeriod);
+        }
+        if core::cmp::min(start, end) < self.start || core::cmp::max(start, end) > self.end {
+            return Err(DayCountError::AccrualOutsideReferencePeriod);
+        }
+        Ok(())
+    }
+}
+
+/// Contractual information needed by schedule-dependent day counts.
+///
+/// Fields not used by the selected convention are ignored. A missing field
+/// required by the selected convention is an error, including on equal dates.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DayCountContext {
+    /// Reference coupon period for Act/365L or Act/Act ICMA.
+    pub coupon: Option<CouponPeriod>,
+    /// Whether the supplied accrual `end` is the instrument's maturity date.
+    pub end_is_maturity: Option<bool>,
+}
+
+/// Computes a year fraction, requiring all context used by the convention.
+///
+/// # Errors
+///
+/// Returns a missing-context error for Act/365L, Act/Act ICMA, 30E/360 ISDA,
+/// or Bus/252 when its required context is absent. Coupon validation errors
+/// are propagated from [`act_365l::try_fraction`] or
+/// [`act_act_icma::try_fraction`]. Use [`try_fraction_with_business_days`] for
+/// Bus/252 or [`bus_252::fraction`] directly with a business-day predicate.
+///
+/// # Examples
+///
+/// ```
+/// use regit_daycount::{Date, DayCount, day_count::{self, CouponPeriod, DayCountContext}};
+/// let start = Date::ymd(2024, 4, 1).unwrap();
+/// let end = Date::ymd(2024, 7, 1).unwrap();
+/// let context = DayCountContext {
+///     coupon: Some(CouponPeriod { start, end, frequency: 4 }),
+///     ..DayCountContext::default()
+/// };
+/// let fraction = day_count::try_fraction(start, end, DayCount::Act365L, context).unwrap();
+/// assert!((fraction - 91.0 / 366.0).abs() < 1e-12);
+/// ```
+pub fn try_fraction(
+    start: Date,
+    end: Date,
+    basis: DayCount,
+    context: DayCountContext,
+) -> Result<f64, DayCountError> {
+    match basis {
+        DayCount::ActActIcma | DayCount::Act365L => {
+            let coupon = context.coupon.ok_or(DayCountError::MissingCouponPeriod)?;
+            if basis == DayCount::ActActIcma {
+                act_act_icma::try_fraction(start, end, coupon.start, coupon.end, coupon.frequency)
+            } else {
+                act_365l::try_fraction(start, end, coupon.start, coupon.end, coupon.frequency)
+            }
+        }
+        DayCount::ThirtyE360Isda => {
+            let maturity = context
+                .end_is_maturity
+                .ok_or(DayCountError::MissingMaturity)?;
+            Ok(thirty_e_360_isda::fraction(start, end, maturity))
+        }
+        DayCount::Bus252 => Err(DayCountError::MissingBusinessDayPredicate),
+        DayCount::Act360 => Ok(act_360::fraction(start, end)),
+        DayCount::Act365F => Ok(act_365f::fraction(start, end)),
+        DayCount::ActActIsda => Ok(act_act_isda::fraction(start, end)),
+        DayCount::Thirty360BondBasis => Ok(thirty_360_bond_basis::fraction(start, end)),
+        DayCount::ThirtyE360 => Ok(thirty_e_360::fraction(start, end)),
+        DayCount::Nl365 => Ok(nl_365::fraction(start, end)),
+        DayCount::OneOne => Ok(one_one::fraction(start, end)),
+    }
+}
+
+/// Computes a year fraction with an explicit business-day predicate.
+///
+/// The predicate is used only for Bus/252. All other conventions delegate
+/// to [`try_fraction`] with the supplied context.
+///
+/// # Errors
+///
+/// Returns the same errors as [`try_fraction`] for conventions other than
+/// Bus/252. The predicate defines the business-day set and must cover the
+/// complete interval; this function does not infer a calendar or coverage.
+pub fn try_fraction_with_business_days(
+    start: Date,
+    end: Date,
+    basis: DayCount,
+    context: DayCountContext,
+    is_business_day: impl Fn(Date) -> bool,
+) -> Result<f64, DayCountError> {
+    if basis == DayCount::Bus252 {
+        Ok(bus_252::fraction(start, end, is_business_day))
+    } else {
+        try_fraction(start, end, basis, context)
+    }
+}
+
 /// Computes the year fraction under `basis` between two dates.
 ///
-/// This is the common entry point for the eleven conventions in this crate.
-/// Three variants need information `fraction` cannot supply on its own:
-///
-/// - [`DayCount::ActActIcma`] requires a reference period and frequency.
-///   `fraction` returns `f64::NAN` for this variant; use
-///   [`year_fraction_with_freq`] instead.
-/// - [`DayCount::Bus252`] requires a business-day predicate. `fraction`
-///   returns `f64::NAN` for this variant; call [`bus_252::fraction`]
-///   directly with the predicate from your chosen calendar.
-/// - [`DayCount::ThirtyE360Isda`] takes an `end_is_maturity` flag.
-///   `fraction` defaults it to `false`; for the maturity case call
-///   [`thirty_e_360_isda::fraction`] directly with the flag.
-///
-/// `f64::NAN` is the "cannot compute" sentinel because it propagates loudly
-/// through arithmetic — silently absorbing the call as `0.0` would be the
-/// most dangerous possible failure (a wrong cashflow with no warning).
+/// Legacy context-free wrapper around [`try_fraction`]. Act/365L,
+/// Act/Act ICMA, 30E/360 ISDA and Bus/252 require additional context and
+/// return `NaN`. All other variants compute directly.
 ///
 /// # Examples
 ///
@@ -153,28 +260,16 @@ pub mod thirty_e_360_isda;
 /// ```
 #[must_use]
 pub fn fraction(start: Date, end: Date, basis: DayCount) -> f64 {
-    match basis {
-        DayCount::Act360 => act_360::fraction(start, end),
-        DayCount::Act365F => act_365f::fraction(start, end),
-        DayCount::ActActIsda => act_act_isda::fraction(start, end),
-        DayCount::Thirty360BondBasis => thirty_360_bond_basis::fraction(start, end),
-        DayCount::ThirtyE360 => thirty_e_360::fraction(start, end),
-        DayCount::ThirtyE360Isda => thirty_e_360_isda::fraction(start, end, false),
-        DayCount::Act365L => act_365l::fraction(start, end),
-        DayCount::Nl365 => nl_365::fraction(start, end),
-        DayCount::OneOne => one_one::fraction(start, end),
-        DayCount::ActActIcma | DayCount::Bus252 => f64::NAN,
-    }
+    try_fraction(start, end, basis, DayCountContext::default()).unwrap_or(f64::NAN)
 }
 
-/// Computes the year fraction under `basis`, supplying a reference period
-/// and frequency that [`DayCount::ActActIcma`] requires.
+/// Computes a year fraction using an explicit coupon period and frequency.
 ///
-/// For [`DayCount::ActActIcma`] this delegates to [`act_act_icma::fraction`]
-/// with the five-argument signature `(start, end, ref_start, ref_end,
-/// freq)`. For every other variant the `freq` / `ref_start` / `ref_end` are
-/// ignored and the call delegates to [`fraction`] — so [`DayCount::Bus252`]
-/// still returns `f64::NAN` here too.
+/// Act/Act ICMA and Act/365L consume the coupon arguments. Other variants
+/// delegate to [`fraction`]; 30E/360 ISDA and Bus/252 still return `NaN`
+/// because the signature lacks maturity and business-day context.
+/// Invalid coupon context also returns `NaN`; use
+/// [`try_year_fraction_with_freq`] for a typed error.
 ///
 /// # Examples
 ///
@@ -198,10 +293,39 @@ pub fn year_fraction_with_freq(
     ref_start: Date,
     ref_end: Date,
 ) -> f64 {
-    match basis {
-        DayCount::ActActIcma => act_act_icma::fraction(start, end, ref_start, ref_end, freq),
-        _ => fraction(start, end, basis),
-    }
+    try_year_fraction_with_freq(start, end, basis, freq, ref_start, ref_end).unwrap_or(f64::NAN)
+}
+
+/// Computes a year fraction using a single explicit reference coupon period.
+///
+/// The coupon arguments are used by Act/Act ICMA and Act/365L only.
+///
+/// # Errors
+///
+/// Returns the same errors as [`try_fraction`]. 30E/360 ISDA requires an
+/// explicit maturity flag, and Bus/252 requires a business-day predicate;
+/// this signature cannot supply those, so it returns a missing-context error.
+pub fn try_year_fraction_with_freq(
+    start: Date,
+    end: Date,
+    basis: DayCount,
+    freq: u8,
+    ref_start: Date,
+    ref_end: Date,
+) -> Result<f64, DayCountError> {
+    try_fraction(
+        start,
+        end,
+        basis,
+        DayCountContext {
+            coupon: Some(CouponPeriod {
+                start: ref_start,
+                end: ref_end,
+                frequency: freq,
+            }),
+            end_is_maturity: None,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -254,21 +378,17 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_routes_thirty_e_360_isda_with_no_maturity_default() {
-        // The dispatcher defaults `end_is_maturity = false` for
-        // ThirtyE360Isda. 2024-02-29 → 2024-08-31 (!maturity): D1 29→30,
-        // D2 31→30, f = 0.5.
+    fn dispatcher_requires_thirty_e_360_isda_maturity_context() {
         let s = Date::ymd(2024, 2, 29).unwrap();
         let e = Date::ymd(2024, 8, 31).unwrap();
-        assert!((fraction(s, e, DayCount::ThirtyE360Isda) - 0.5).abs() < TOL);
+        assert!(fraction(s, e, DayCount::ThirtyE360Isda).is_nan());
     }
 
     #[test]
-    fn dispatcher_routes_act_365l() {
-        // Q1 2024 straddles 2024-02-29; the denominator is 366.
+    fn dispatcher_requires_act_365l_coupon_context() {
         let s = Date::ymd(2024, 1, 1).unwrap();
         let e = Date::ymd(2024, 4, 1).unwrap();
-        assert!((fraction(s, e, DayCount::Act365L) - 91.0 / 366.0).abs() < TOL);
+        assert!(fraction(s, e, DayCount::Act365L).is_nan());
     }
 
     #[test]
@@ -312,8 +432,7 @@ mod tests {
 
     #[test]
     fn freq_dispatcher_ignores_ref_args_for_other_variants() {
-        // The ref/freq arguments are silently dropped for the ten other
-        // variants; the call must equal `fraction(s, e, basis)`.
+        // Conventions independent of coupon context ignore these fields.
         let s = Date::ymd(2026, 1, 1).unwrap();
         let e = Date::ymd(2026, 4, 1).unwrap();
         let with_freq = year_fraction_with_freq(s, e, DayCount::Act360, 99, s, e);

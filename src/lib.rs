@@ -10,7 +10,7 @@
 //! 1/1), adjusts a date under every common date-roll convention (Unadjusted,
 //! Following, `ModifiedFollowing`, Preceding, `ModifiedPreceding`, Nearest,
 //! `EndOfMonth`), and classifies dates against the major holiday calendars
-//! (TARGET2, US, UK, JP, CH, HK, SG, plus composite and joint-business
+//! (TARGET2, Luxembourg, NYSE, Federal Reserve, UK, JP, CH, HK, SG, plus composite and joint-business
 //! combinations).
 //!
 //! A coupon is paid on a date, an accrued-interest amount is settled to a
@@ -24,7 +24,7 @@
 //! The crate is `#![no_std]` and allocation-free: dates are 32-bit `Copy`
 //! triples, every algorithm is hand-rolled integer arithmetic, holiday
 //! tables are static sorted arrays, and there is no runtime dependency. The
-//! same audited logic runs in a backend service, a WASM bundle, or on an
+//! same calculation logic runs in a backend service, a WASM bundle, or on an
 //! embedded device.
 //!
 //! # Architecture
@@ -38,7 +38,7 @@
 //!              (Act/360, Act/365F, ActAct ISDA, ActAct ICMA, 30/360, ...)
 //!
 //! calendar     catalogue of holiday calendars and their dispatcher
-//!              (TARGET2 fixed rule; US / UK / JP / CH / HK / SG snapshots)
+//!              (TARGET2 / Luxembourg / Federal Reserve rules; market snapshots)
 //! ```
 //!
 //! Every rule is traced to a citable standard — ISDA 2006 Definitions §4.16,

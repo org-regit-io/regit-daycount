@@ -19,14 +19,14 @@
 //! ModifiedPreceding   Preceding, unless it crosses a month boundary —
 //!                     then Following
 //! Nearest             the nearer business day; ties broken forward
-//! EndOfMonth          anchor to the last business day of the month when
-//!                     the input is the last business day of its month
+//! EndOfMonth          standalone-date operation: ModifiedFollowing;
+//!                     schedule-origin EOM propagation needs separate context
 //! ```
 //!
 //! The free function [`apply`] applies a roll. To avoid the cycle between
 //! `roll` and `calendar` (`roll::apply` needs to know what a business day
 //! is, and `calendar::adjust` is the thin wrapper that closes over a
-//! [`crate::Calendar`]), `apply` takes a caller-supplied `is_business_day`
+//! `Calendar` (with the `calendars` feature)), `apply` takes a caller-supplied `is_business_day`
 //! predicate rather than a `Calendar`. The `calendar` module passes
 //! `|d| !is_holiday(d, cal) && !is_weekend(d)` in.
 //!
@@ -68,8 +68,9 @@ pub enum Roll {
     ModifiedPreceding,
     /// Roll to the nearer business day; ties are broken forward.
     Nearest,
-    /// Anchor every rolled date to the last business day of the month when
-    /// the input is itself the last business day of its month.
+    /// For a standalone date, preserve a business date and otherwise apply
+    /// Modified Following. This API has no schedule origin and does not
+    /// propagate an end-of-month anchor across a generated coupon schedule.
     EndOfMonth,
 }
 
@@ -107,14 +108,11 @@ const MAX_STEPS: u32 = 366;
 /// - **`Nearest`** — if `date` is a business day, return it. Otherwise
 ///   compute the day distances to the next and previous business days and
 ///   return the closer one; ties go to `Following`.
-/// - **`EndOfMonth`** — ISDA 2006 §4.12. If `date` is the **last business
-///   day of its month** under the predicate, then any rolled coupon date
-///   anchors to *the last business day of the month it lands in*. Concretely
-///   `apply` returns the last business day of `date`'s own month; the
-///   caller is expected to combine this with month-arithmetic (see
-///   [`Date::add_months_eom_aware`]) to roll forward by a coupon period.
-///   When `date` is not the last business day of its month, `EndOfMonth`
-///   falls back to `ModifiedFollowing`.
+/// - **`EndOfMonth`** — for this standalone-date API, preserve a business
+///   date and otherwise apply `ModifiedFollowing`. It agrees with a zero-month
+///   `QuantLib` calendar advance using `ModifiedFollowing` and `endOfMonth=true`.
+///   The signature contains no originating coupon or schedule anchor, so it
+///   does not generate schedules or propagate end-of-month anchoring.
 ///
 /// # Examples
 ///

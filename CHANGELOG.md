@@ -5,8 +5,82 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Caller-facing API and behavior changes are recorded with each release.
+
+## [1.1.0] - 2026-10-23
+
+Correctness hardening with explicit calculation context and independent
+reference coverage. The production crate remains pure Rust, `no_std`,
+allocation free and free of runtime dependencies.
+
+### Fixed
+
+- Act/365L now requires coupon frequency and next-coupon context, and uses
+  the annual/nonannual ICMA denominator rules. NL/365 now matches QuantLib
+  NoLeap at both leap-day boundaries.
+- NYSE no longer closes the Friday before a Saturday New Year's Day;
+  added the exceptional 9 January 2025 Carter funeral closure.
+- Singapore's 2026 Hari Raya Puasa is 21 March. Luxembourg's bank calendar
+  now includes Good Friday.
+- Corrected 101 additional business-day classifications across 2020–2040:
+  SIX Christmas/New Year's Eve trading closures, HKEX exceptional weather
+  closures and substitutions, SGX polling closures and religious projections.
+  SIX/HKEX named-holiday weekend rows now use consistent market-reference
+  semantics; Federal Reserve's raw Juneteenth holiday begins in 2021.
+- Clarified the standalone `EndOfMonth` adjustment contract and verified all
+  seven roll variants against executed reference operations.
+- Predicate-based Bus/252 counts the complete interval instead of silently
+  stopping after 73,000 calendar days.
+
+### Added
+
+- Typed `try_*` day-count APIs with explicit coupon and maturity context.
+  Invalid ICMA reference periods, zero frequency and accrual outside one
+  reference period are rejected. Irregular coupons must be split by callers.
+- Separate NYSE and Federal Reserve calendar variants. `UnitedStates`
+  remains an alias for NYSE.
+- Checked calendar queries and walks, coverage metadata, and an explicit
+  policy for projected data. Checked walks report coverage/range/limit errors.
+- An executed Python oracle with 477,265 reference cases covering all 11
+  day counts, seven rolls, ten calendar variants, 13 public Date methods,
+  business-day operations and both calendar combinators. It uses pinned
+  QuantLib, FinancePy and independent market-calendar/Gregorian references.
+  Public inventory checks reject missing reference coverage; source hashes
+  and expected results are retained for reproducible, offline Rust tests.
+  References and Rust test adapters are development-only.
+- Official calendar regressions with source provenance.
+- Minimum-supported-Rust 1.85 library builds in CI for both feature modes.
+
+### Changed
+
+- Updated development tooling to Rust 1.99.1, proptest 1.12.0 and criterion
+  0.8.2, with QuantLib 1.44 and convertdate 2.5.1 oracle references. The
+  library MSRV remains Rust 1.85.
+- Retracted the original release's blanket claims of row-by-row official
+  verification and historical TARGET accuracy across the full Date range.
+  Current checked coverage metadata and retained oracle results replace
+  those assurances.
+- Context-free `fraction` returns NaN for Act/365L and 30E/360 ISDA as well
+  as ICMA and Bus/252; callers must now provide the missing context.
+- Invalid legacy ICMA calls return NaN instead of plausible zero accruals.
+- `year_fraction_with_freq` now uses the supplied coupon period and frequency
+  for Act/365L as well as ICMA.
+- README and specification distinguish tested behavior, projected calendar
+  data, historical support, and the feature-gated calendar module.
+
+### Migration
+
+- Supply `DayCountContext` to `day_count::try_fraction` for coupon-sensitive
+  conventions and 30E/360 ISDA maturity calculations. Use typed results to
+  distinguish invalid context from a genuine zero fraction.
+- Update exhaustive `Calendar` matches for `UnitedStatesNyse` and
+  `UnitedStatesFederalReserve`. The existing `UnitedStates` alias remains
+  NYSE, preserving its market identity.
+- Choose the checked calendar coverage policy explicitly. Agreement with
+  an independent library does not upgrade projected dates to official
+  verified coverage. ICMA remains limited to one reference coupon period;
+  standalone `EndOfMonth` does not construct or anchor coupon schedules.
 
 ## [1.0.1] - 2026-07-13
 
@@ -16,6 +90,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and bench-only dependency; there are no runtime or public API changes.
 
 ## [1.0.0] - 2026-05-23
+
+The original release description below is retained as history. Its blanket
+verification and historical calendar assurances are superseded by the
+corrections and coverage contract in 1.1.0.
 
 First public release. The crate is `#![no_std]`, allocation-free, and has
 zero runtime dependencies; every day-count fraction, date-roll convention,
@@ -237,4 +315,6 @@ astronomically- or rule-derived projections.
 - **~10,000 lines** of library Rust (`src/`), **~1,800 lines** of
   example, benchmark, and integration tests.
 
+[1.1.0]: https://github.com/org-regit-io/regit-daycount/releases/tag/v1.1.0
+[1.0.1]: https://github.com/org-regit-io/regit-daycount/releases/tag/v1.0.1
 [1.0.0]: https://github.com/org-regit-io/regit-daycount/releases/tag/v1.0.0

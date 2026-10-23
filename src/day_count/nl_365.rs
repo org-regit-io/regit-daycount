@@ -6,7 +6,7 @@
 //! NL/365 is a money-market variant of Act/365F that excludes 29 February
 //! from the numerator: the fraction's numerator is the actual count of
 //! calendar days between `start` and `end`, *minus* the number of
-//! 29-February dates that fall in the half-open interval `[start, end)`;
+//! 29-February dates that fall in the interval `(start, end]`;
 //! the denominator is the fixed constant 365. The effect is that a full
 //! leap-year span and a full non-leap-year span both return exactly
 //! `1.0` — the convention is "leap-year-blind" by construction in the
@@ -23,7 +23,7 @@
 //! # Algorithm
 //!
 //! ```text
-//! numerator   = days_between(start, end) - leap_days_in_interval(start, end)
+//! numerator   = sign * (days_between(lo, hi) - leap_days_in_interval(lo, hi))
 //! denominator = 365
 //! fraction    = numerator / 365.0
 //! ```
@@ -31,11 +31,12 @@
 //! Where `days_between` is the signed count of days from `start` to
 //! `end`, end-exclusive, start-inclusive, and `leap_days_in_interval`
 //! is the count of dates `Date::ymd(y, 2, 29)` (for any leap year `y`)
-//! satisfying `start <= d < end` — the same half-open convention.
+//! satisfying `start < d <= end`. Leap-day inclusion is start-exclusive
+//! and end-inclusive, independently of how the actual-day count is described.
 //!
 //! For an inverted interval (`start > end`) the function preserves
 //! `fraction(end, start) == -fraction(start, end)`: the leap-day count
-//! is taken over the forward half-open interval and the sign is carried
+//! is taken over the forward interval and the sign is carried
 //! by the signed `days_between`.
 //!
 //! # Worked example — Q1 2024 straddles 29 February
@@ -44,25 +45,24 @@
 //! start = 2024-01-01
 //! end   = 2024-04-01
 //! days  = 31 + 29 + 31 = 91     (Jan + Feb (2024 leap) + Mar)
-//! 29-Feb in [start, end): 2024-02-29 → subtract 1
+//! 29-Feb in (start, end]: 2024-02-29 → subtract 1
 //! num   = 91 - 1 = 90
 //! f     = 90 / 365 = 0.246575342465753
 //! ```
 //!
 //! # References
 //!
-//! - Market-convention day-count catalogues that list NL/365 alongside
-//!   the ISDA / ICMA fractions — the convention is non-statutory; no
-//!   single primary reference applies.
+//! - [QuantLib v1.44 `Actual365Fixed::NoLeap`](https://github.com/lballabio/QuantLib/blob/v1.44/ql/time/daycounters/actual365fixed.cpp)
+//!   uses no-leap serial dates, mapping 29 February to 28 February.
 
 use crate::date::Date;
 
 /// Computes the NL/365 year fraction between two dates.
 ///
-/// The result is `(days_between(start, end) - leap_days_in_interval) /
-/// 365`, where `days_between` is signed and `leap_days_in_interval` is
-/// the count of 29-February dates in the half-open interval
-/// `[min(start, end), max(start, end))`. See the module-level docstring
+/// The forward result is `(days_between(start, end) - leap_days_in_interval) /
+/// 365`; reverse accruals negate the corresponding forward result. The leap
+/// count is the number of 29-February dates in the interval
+/// `(min(start, end), max(start, end)]`. See the module-level docstring
 /// for the full algorithm and worked example.
 ///
 /// The function is sign-preserving: `fraction(end, start) ==
@@ -84,7 +84,7 @@ use crate::date::Date;
 pub fn fraction(start: Date, end: Date) -> f64 {
     let raw = start.days_between(end);
     // Order the endpoints so the leap-day count is taken over the
-    // forward half-open interval `[lo, hi)`; the sign of the result is
+    // forward interval `(lo, hi]`; the sign of the result is
     // carried by `raw` itself. This preserves
     // `fraction(end, start) == -fraction(start, end)`.
     let (lo, hi, sign) = if raw >= 0 {
@@ -98,11 +98,11 @@ pub fn fraction(start: Date, end: Date) -> f64 {
 }
 
 /// Counts the 29-February dates that fall in the half-open interval
-/// `[lo, hi)`, where `lo <= hi`.
+/// `(lo, hi]`, where `lo <= hi`.
 ///
 /// Iterates over each year touched by the interval (inclusive of both
 /// endpoints' years) and tests whether `Date::ymd(y, 2, 29)` — when it
-/// exists, i.e. when `y` is a Gregorian leap year — lies in `[lo, hi)`.
+/// exists, i.e. when `y` is a Gregorian leap year — lies in `(lo, hi]`.
 /// The iteration is bounded by the year span of the interval and is
 /// allocation-free.
 //
@@ -117,7 +117,7 @@ fn leap_days_in_interval(lo: Date, hi: Date) -> i32 {
     while y <= y_end {
         if Date::is_leap_year(y) {
             let feb29 = Date::ymd_unchecked(y, 2, 29);
-            if feb29 >= lo && feb29 < hi {
+            if feb29 > lo && feb29 <= hi {
                 count += 1;
             }
         }
@@ -145,7 +145,7 @@ mod tests {
         // doc/ALGORITHMS.md §A.9 worked example:
         //   start = 2024-01-01, end = 2024-04-01
         //   days  = 31 + 29 + 31 = 91 (Jan + Feb leap + Mar)
-        //   29-Feb in [start, end): 2024-02-29 → subtract 1
+        //   29-Feb in (start, end]: 2024-02-29 → subtract 1
         //   num   = 90
         //   f     = 90 / 365 = 0.246575342465753
         let start = Date::ymd(2024, 1, 1).unwrap();
@@ -161,7 +161,7 @@ mod tests {
     fn worked_2024_q2_no_leap() {
         // start = 2024-04-01, end = 2024-07-01
         // days  = 30 (Apr) + 31 (May) + 30 (Jun) = 91
-        // No 29-Feb in [start, end). num = 91.
+        // No 29-Feb in (start, end]. num = 91.
         // f = 91 / 365 = 0.249315068493151
         let start = Date::ymd(2024, 4, 1).unwrap();
         let end = Date::ymd(2024, 7, 1).unwrap();
@@ -205,7 +205,7 @@ mod tests {
     fn worked_two_leap_years_span_2024_2028() {
         // start = 2024-01-01, end = 2028-01-01
         // days = 366 + 365 + 365 + 365 = 1461 (2024 leap; 2025, 2026, 2027
-        // non-leap). 2024-02-29 IS in [start, end); 2028-02-29 is NOT
+        // non-leap). 2024-02-29 IS in (start, end]; 2028-02-29 is NOT
         // (the interval ends at 2028-01-01 < 2028-02-29). Subtract 1.
         // num = 1460. f = 1460 / 365 = 4.0 exactly.
         let start = Date::ymd(2024, 1, 1).unwrap();

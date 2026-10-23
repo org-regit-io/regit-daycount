@@ -69,12 +69,13 @@
 //!
 //! # Inverted intervals
 //!
-//! `fraction(end, start, _)` for `start < end` produces a negative
-//! result by the natural arithmetic of the formula above — the
-//! `(Y2 - Y1)`, `(M2 - M1)`, and `(D2 - D1)` differences all flip sign
-//! together. No special case is needed in the body; the crate as a whole
-//! does not reject inverted intervals (some callers compute
-//! reverse-period accruals) and this module mirrors that behaviour.
+//! Reversed endpoints retain the endpoint-specific adjustment rules. The
+//! caller's `end_is_maturity` flag always describes the supplied `end`, so
+//! reversing an accrual need not negate its fraction. At equal February
+//! maturity endpoints, only the first day is adjusted to 30; the formula
+//! can therefore return `-1/360` or `-2/360` rather than zero. These cases
+//! match `QuantLib`'s ISDA convention and must not be replaced by a generic
+//! sign or equal-date shortcut.
 //!
 //! # References
 //!

@@ -13,56 +13,100 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  oracle:
+    name: Independent Python oracle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: Install pinned development oracle
+        run: |
+          python3 -m venv /tmp/daycount-oracle
+          /tmp/daycount-oracle/bin/python -m pip install -r validation/requirements.txt
+
+      - name: Regenerate fixtures and compare Rust
+        run: /tmp/daycount-oracle/bin/python validation/oracle.py --check --rust
+
+  msrv:
+    name: Minimum Rust 1.85
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install minimum supported Rust
+        run: rustup toolchain install 1.85.0 --profile minimal
+
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: Build library (both feature configurations)
+        run: |
+          cargo +1.85.0 build --lib --all-features --locked
+          cargo +1.85.0 build --lib --no-default-features --locked
+
   check:
     name: Quality Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
-      # Honour rust-toolchain.toml: installs the pinned channel (1.95.0)
+      # Honour rust-toolchain.toml: installs the pinned channel (1.99.1)
       # with declared components and targets.
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy (all targets, all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test (default features)
-        run: cargo test
+        run: cargo test --locked
 
       - name: Test (no default features)
-        run: cargo test --no-default-features
+        run: cargo test --no-default-features --locked
 
       - name: Doc
-        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: '-D warnings'
+        run: cargo doc --no-deps --all-features --locked
 
       - name: Deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@v2.1.1
+
+      - name: Verify publishable archive
+        run: cargo package --locked
 
   wasm:
     name: WASM build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
 
       - name: Build for wasm32-unknown-unknown
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: cargo build --target wasm32-unknown-unknown --release --locked
 
   no-std:
     name: no_std build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       # rust-toolchain.toml declares targets = [..., "thumbv7em-none-eabi"];
       # thumbv7em-none-eabi has no `std` at all, so a successful build is a
@@ -70,10 +114,10 @@ jobs:
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
 
       - name: Build for thumbv7em-none-eabi (no default features)
-        run: cargo build --target thumbv7em-none-eabi --no-default-features
+        run: cargo build --target thumbv7em-none-eabi --no-default-features --locked
 
       - name: Build for thumbv7em-none-eabi (with calendars)
-        run: cargo build --target thumbv7em-none-eabi
+        run: cargo build --target thumbv7em-none-eabi --locked

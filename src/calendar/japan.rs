@@ -91,47 +91,15 @@
 //! responsible for refusing to settle a cashflow beyond this horizon
 //! against the Japan calendar.
 //!
-//! ## Verification
+//! # Verification status
 //!
-//! Every row in [`HOLIDAYS`] was cross-verified on **2026-05-23** against
-//! the following primary sources:
-//!
-//! - Cabinet Office of Japan, *Kokumin no shukujitsu* gazette:
-//!   <https://www8.cao.go.jp/chosei/shukujitsu/gaiyou.html>. Gazetted
-//!   horizon as of the snapshot date covers 2020–2027 (the Cabinet
-//!   Office publishes the upcoming year's equinoxes in February of the
-//!   preceding year; the 2027 dates were gazetted in February 2026).
-//! - Japan Exchange Group, *Trading Calendar of the Tokyo Stock
-//!   Exchange*:
-//!   <https://www.jpx.co.jp/english/corporate/about-jpx/calendar/index.html>.
-//!   JPX publishes the trading calendar two years ahead; at the
-//!   snapshot date the 2024, 2025, 2026 (and provisional 2027) PDFs are
-//!   binding.
-//! - *Public holidays in Japan* and *List of observances set by the
-//!   Japanese calendar* on Wikipedia, used as a secondary
-//!   cross-reference for the Aoki/NAOJ astronomical equinox formula
-//!   beyond the gazetted horizon.
-//!
-//! Vernal- and autumnal-equinox dates for years 2028–2040 are
-//! *astronomical inferences* computed from the Aoki/NAOJ formula
-//! (valid 1980–2099) and will be replaced by the gazetted Cabinet
-//! Office value as it becomes available; each affected row carries an
-//! `equinox: NAOJ astronomical inference (Aoki formula)` annotation.
-//! Gazetted years (2020–2027) carry an `equinox: source = Cabinet
-//! Office published table` annotation. The Aoki formula was
-//! independently re-verified to agree with every Cabinet Office
-//! gazetted value 2020–2027 inclusive.
-//!
-//! People's Holiday (*kokumin no shukujitsu*) firings in the coverage
-//! window were confirmed for **2026, 2032, and 2037** — these are the
-//! only years 2020–2040 in which Respect for the Aged Day (3rd Mon
-//! Sep) and the autumnal-equinox date are separated by a single
-//! weekday.
-//!
-//! The Tokyo-2020 Olympic-year holiday moves were confirmed for both
-//! 2020 (Marine 23 Jul, Sports 24 Jul, Mountain 10 Aug) and 2021
-//! (Marine 22 Jul, Sports 23 Jul, Mountain 8 Aug — substitute Mon 9
-//! Aug for the Sunday) against the gazetted Act amendment.
+//! No complete primary-source annual audit has been retained for this
+//! table. Earlier prose asserted broader verification than its evidence
+//! established. Rule-derived regression tests check internal consistency;
+//! they do not establish market agreement. All available years currently
+//! require [`super::CoveragePolicy::AllowProjected`] in the checked APIs.
+//! Consult [`super::coverage`] for machine-readable horizons and refresh
+//! annual schedules from the primary sources before operational use.
 //!
 //! # References
 //!
@@ -673,9 +641,9 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
 ///
 /// The lookup is a binary search over [`HOLIDAYS`], which is sorted
 /// ascending. Dates outside [`COVERAGE`] return `false`: the snapshot
-/// has nothing to say about them, and a `false` for an unknown date is
-/// the safe failure mode (the caller is responsible for refusing to
-/// settle a cashflow beyond this horizon against the Japan calendar).
+/// has nothing to say about them. This permissive legacy result is not
+/// evidence that the market is open. Use [`super::try_is_holiday`] to
+/// reject dates outside the selected coverage policy.
 ///
 /// Weekends are not classified as holidays here — they are handled by
 /// the caller's business-day predicate (see the `is_business_day`

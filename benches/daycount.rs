@@ -123,19 +123,22 @@ fn bench_day_count(c: &mut Criterion) {
     });
     group.bench_function("thirty_e_360_isda", |b| {
         b.iter(|| {
-            day_count::fraction(
+            day_count::thirty_e_360_isda::fraction(
                 black_box(start),
                 black_box(end),
-                black_box(DayCount::ThirtyE360Isda),
+                black_box(false),
             )
         });
     });
     group.bench_function("act_365l", |b| {
         b.iter(|| {
-            day_count::fraction(
+            day_count::year_fraction_with_freq(
                 black_box(start),
                 black_box(end),
                 black_box(DayCount::Act365L),
+                black_box(1),
+                black_box(start),
+                black_box(end),
             )
         });
     });

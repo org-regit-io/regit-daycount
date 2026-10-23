@@ -32,10 +32,8 @@
 //! use regit_daycount::calendar::Composite;
 //!
 //! // A Luxembourg-domiciled UCITS calendar: holiday if TARGET2 OR the
-//! // local Luxembourg calendar would close. (Luxembourg-only holidays —
-//! // National Day, Assumption — are not in the named set yet, so this
-//! // composite reduces to TARGET2 alone for now.)
-//! static REGIONS: &[Calendar] = &[Calendar::Target2];
+//! // local Luxembourg calendar would close.
+//! static REGIONS: &[Calendar] = &[Calendar::Target2, Calendar::Luxembourg];
 //! let lu = Composite::new(REGIONS);
 //!
 //! // 2026-12-25 is a TARGET2 holiday → composite holiday.
@@ -45,7 +43,11 @@
 //! assert!(!lu.is_holiday(Date::ymd(2026, 5, 20).unwrap()));
 //! ```
 
-use crate::calendar::{Calendar, is_business_day, is_holiday};
+use crate::Roll;
+use crate::calendar::{
+    Calendar, CalendarError, CoveragePolicy, checked, is_business_day, is_holiday,
+    try_is_holiday_with_policy,
+};
 use crate::date::Date;
 
 // ─── Composite ───────────────────────────────────────────────────────────────
@@ -230,6 +232,178 @@ impl JointBusiness {
         self.kinds.iter().any(|&cal| is_holiday(date, cal))
     }
 }
+
+// Checked combinators intentionally evaluate every leg: a holiday on the
+// first leg must not hide unavailable data on a later leg.
+fn checked_holiday(
+    kinds: &[Calendar],
+    date: Date,
+    policy: CoveragePolicy,
+) -> Result<bool, CalendarError> {
+    Date::ymd(date.year(), date.month(), date.day())
+        .map_err(|_| CalendarError::InvalidDate { date })?;
+    let mut holiday = false;
+    for &cal in kinds {
+        holiday |= try_is_holiday_with_policy(date, cal, policy)?;
+    }
+    Ok(holiday)
+}
+
+// Both public combinators have identical business-day semantics. Keep their
+// checked implementations together so validation and bounded walking agree.
+macro_rules! checked_combinator {
+    ($kind:ty) => {
+        impl $kind {
+            /// Checked union-of-holidays query using verified data only.
+            ///
+            /// # Errors
+            /// Returns an error when any leg lacks verified coverage.
+            pub fn try_is_holiday(&self, date: Date) -> Result<bool, CalendarError> {
+                self.try_is_holiday_with_policy(date, CoveragePolicy::VerifiedOnly)
+            }
+
+            /// Checked holiday query; every leg must satisfy the policy.
+            ///
+            /// # Errors
+            /// Returns an error for invalid dates or unavailable data on any leg.
+            pub fn try_is_holiday_with_policy(
+                &self,
+                date: Date,
+                policy: CoveragePolicy,
+            ) -> Result<bool, CalendarError> {
+                checked_holiday(self.kinds, date, policy)
+            }
+
+            /// Checked intersection of business days using verified data only.
+            /// Empty composites preserve the legacy vacuous-true behavior,
+            /// including weekends; use at least one leg for a market calendar.
+            ///
+            /// # Errors
+            /// Returns an error when any leg lacks verified coverage.
+            pub fn try_is_business_day(&self, date: Date) -> Result<bool, CalendarError> {
+                self.try_is_business_day_with_policy(date, CoveragePolicy::VerifiedOnly)
+            }
+
+            /// Checked business query; every leg must satisfy the policy even
+            /// when an earlier leg already classifies the date as closed.
+            ///
+            /// # Errors
+            /// Returns an error for invalid dates or unavailable data on any leg.
+            pub fn try_is_business_day_with_policy(
+                &self,
+                date: Date,
+                policy: CoveragePolicy,
+            ) -> Result<bool, CalendarError> {
+                let holiday = checked_holiday(self.kinds, date, policy)?;
+                Ok(self.kinds.is_empty() || (!super::is_weekend(date) && !holiday))
+            }
+
+            /// Checked adjustment with verified data on every leg.
+            ///
+            /// # Errors
+            /// Returns coverage, date-boundary, or walk-limit errors.
+            pub fn try_adjust(&self, date: Date, conv: Roll) -> Result<Date, CalendarError> {
+                self.try_adjust_with_policy(date, conv, CoveragePolicy::VerifiedOnly)
+            }
+
+            /// Checked adjustment with explicit policy on every traversed date.
+            ///
+            /// # Errors
+            /// Returns coverage, date-boundary, or walk-limit errors.
+            pub fn try_adjust_with_policy(
+                &self,
+                date: Date,
+                conv: Roll,
+                policy: CoveragePolicy,
+            ) -> Result<Date, CalendarError> {
+                checked::adjust_with_predicate(date, conv, |d| {
+                    self.try_is_business_day_with_policy(d, policy)
+                })
+            }
+
+            /// Checked business-day count in `[start, end)` with verified data.
+            /// Both endpoints, including the exclusive end, are validated.
+            ///
+            /// # Errors
+            /// Returns coverage, date-boundary, or walk-limit errors.
+            pub fn try_business_days_between(
+                &self,
+                start: Date,
+                end: Date,
+            ) -> Result<u32, CalendarError> {
+                self.try_business_days_between_with_policy(start, end, CoveragePolicy::VerifiedOnly)
+            }
+
+            /// Checked business-day count with explicit policy on every leg.
+            ///
+            /// # Errors
+            /// Returns coverage, date-boundary, or walk-limit errors.
+            pub fn try_business_days_between_with_policy(
+                &self,
+                start: Date,
+                end: Date,
+                policy: CoveragePolicy,
+            ) -> Result<u32, CalendarError> {
+                checked::count_with_predicate(start, end, |d| {
+                    self.try_is_business_day_with_policy(d, policy)
+                })
+            }
+
+            /// Checked signed business-day addition using verified data.
+            ///
+            /// # Errors
+            /// Returns coverage, date-boundary, or walk-limit errors.
+            pub fn try_add_business_days(&self, date: Date, n: i32) -> Result<Date, CalendarError> {
+                self.try_add_business_days_with_policy(date, n, CoveragePolicy::VerifiedOnly)
+            }
+
+            /// Checked signed business-day addition with explicit data policy.
+            ///
+            /// # Errors
+            /// Returns coverage, date-boundary, or walk-limit errors.
+            pub fn try_add_business_days_with_policy(
+                &self,
+                date: Date,
+                n: i32,
+                policy: CoveragePolicy,
+            ) -> Result<Date, CalendarError> {
+                checked::add_with_predicate(date, n, |d| {
+                    self.try_is_business_day_with_policy(d, policy)
+                })
+            }
+
+            /// Checked signed Bus/252 fraction using verified data.
+            ///
+            /// # Errors
+            /// Returns coverage, date-boundary, or walk-limit errors.
+            pub fn try_bus_252(&self, start: Date, end: Date) -> Result<f64, CalendarError> {
+                self.try_bus_252_with_policy(start, end, CoveragePolicy::VerifiedOnly)
+            }
+
+            /// Checked signed Bus/252 fraction with explicit data policy.
+            ///
+            /// # Errors
+            /// Returns coverage, date-boundary, or walk-limit errors.
+            pub fn try_bus_252_with_policy(
+                &self,
+                start: Date,
+                end: Date,
+                policy: CoveragePolicy,
+            ) -> Result<f64, CalendarError> {
+                let (lo, hi, sign) = if start > end {
+                    (end, start, -1.0)
+                } else {
+                    (start, end, 1.0)
+                };
+                self.try_business_days_between_with_policy(lo, hi, policy)
+                    .map(|n| sign * f64::from(n) / 252.0)
+            }
+        }
+    };
+}
+
+checked_combinator!(Composite);
+checked_combinator!(JointBusiness);
 
 #[cfg(test)]
 mod tests {

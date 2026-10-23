@@ -1,5 +1,5 @@
 [toolchain]
-channel    = "1.95.0"
+channel    = "1.99.1"
 components = ["rustfmt", "clippy"]
 # wasm32-unknown-unknown        — WASM smoke build.
 # thumbv7em-none-eabi           — a genuine no_std target with no `std` at all;

@@ -10,9 +10,11 @@
 //! bank-holiday calendars catalogued in the other submodules of
 //! [`crate::calendar`], TARGET2 is **fully rule-based**: the European
 //! Central Bank fixes exactly six closing dates per year, derivable from
-//! the year alone, and that schedule has not changed since TARGET2 went
-//! live in 2008. No dated snapshot is stored — the rule is exact for every
-//! year in the supported [`Date`] range.
+//! the year alone. The standing six-day rule applies from 2002 until
+//! further notice. Checked APIs reject earlier dates and require projection
+//! opt-in after the currently verified 2028 horizon. The legacy predicate
+//! mechanically applies the modern rule to every `Date` year; that does
+//! not make it a historical calendar before 2002.
 //!
 //! The six closing dates are:
 //!
@@ -25,10 +27,10 @@
 //! 6.  26 December     Christmas Holiday / Boxing Day  (fixed)
 //! ```
 //!
-//! Whit Monday (Easter + 49 days) was a TARGET closing day in the
-//! original 1999–2001 schedule and was removed when TARGET2 succeeded
-//! TARGET in 2002; it is **not** a TARGET2 holiday and this module does
-//! not return `true` for it.
+//! Whit Monday (Easter +50 days) is not part of this six-day schedule.
+//! Earlier TARGET years had annual schedules and exceptional closures;
+//! they are outside checked coverage. This calendar represents euro
+//! settlement closing days, not availability of the 24/7 TIPS service.
 //!
 //! # Algorithm
 //!
@@ -71,20 +73,20 @@
 //!   the TARGET2 closing days* — the six fixed closing dates,
 //!   unchanged since TARGET2 went live on 19 November 2007 and replaced
 //!   TARGET on 19 May 2008.
-//! - European Central Bank, *TARGET Annual Report* (any year) —
-//!   reproduces the closing-day list.
+//! - ECB standing rule effective from 2002:
+//!   <https://www.ecb.europa.eu/press/pr/date/2000/html/pr001214_4.de.html>.
+//! - Current published 2026–2028 dates marked as TARGET closing days:
+//!   <https://www.bankingsupervision.europa.eu/services/contacts/working-hours/html/index.en.html>.
 //! - Jean Meeus, *Astronomical Algorithms*, 2nd ed., Willmann-Bell, 1998,
 //!   §8 "The date of Easter" — the Computus used by [`Date::easter_sunday`].
 
 use crate::date::Date;
 
-/// True if `date` is a TARGET2 holiday (a Eurozone-wide bank holiday).
+/// True if `date` matches a modern TARGET euro-settlement closing day.
 ///
-/// TARGET2 is the only calendar in this crate that is fully rule-based —
-/// the six holidays are derived from the year alone (Easter via the
-/// Computus algorithm in [`Date::easter_sunday`]), so no dated table is
-/// stored and the calendar is exact for every year in the supported
-/// `Date` range.
+/// This permissive legacy generator applies the six-day rule mechanically
+/// at any year; use [`super::try_is_holiday`] to enforce its 2002 start
+/// and verified horizon. It is not a historical calendar before 2002.
 ///
 /// Weekends are NOT classified as holidays here — they are handled by the
 /// caller's business-day predicate (see the `is_business_day` dispatcher

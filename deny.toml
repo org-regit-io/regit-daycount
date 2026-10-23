@@ -9,6 +9,7 @@
 ignore = []
 
 [licenses]
+include-dev = true
 # The published crate has zero runtime dependencies, so the licence graph of
 # the shipped artefact is the crate itself (Apache-2.0). The remaining entries
 # cover the permissive licences in the *development* dependency tree
@@ -27,6 +28,7 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
+multiple-versions-include-dev = true
 wildcards         = "deny"
 
 [sources]
