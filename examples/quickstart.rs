@@ -13,16 +13,14 @@
 //! hypothetical EUR bond that ties the pieces together. Run with
 //! `cargo run --example quickstart`.
 
-use regit_daycount::calendar::{
-    self, JointBusiness, adjust, bus_252_for_calendar, business_days_between, is_holiday,
-};
+use regit_daycount::calendar::{self, CoveragePolicy, JointBusiness};
 use regit_daycount::day_count;
 use regit_daycount::{Calendar, Date, DayCount, Roll, Weekday};
 
 // Section 7 builds a `JointBusiness` over a `'static` slice — `JointBusiness`
 // borrows its kinds, so the slice must outlive the value. A module-level
 // `static` is the simplest such storage.
-static EUR_USD: &[Calendar] = &[Calendar::Target2, Calendar::UnitedStates];
+static EUR_USD: &[Calendar] = &[Calendar::Target2, Calendar::UnitedStatesNyse];
 
 // A guided tour is one long, deliberately linear `main` — eight labelled
 // sections that read top to bottom; splitting it into helpers would hide
@@ -84,17 +82,28 @@ fn main() {
         DayCount::ActActIsda,
         DayCount::Thirty360BondBasis,
         DayCount::ThirtyE360,
-        DayCount::ThirtyE360Isda,
-        DayCount::Act365L,
         DayCount::Nl365,
         DayCount::OneOne,
     ] {
         println!(
             "  {:<20?} -> {:.12}",
             basis,
-            day_count::fraction(s, e, basis)
+            day_count::try_fraction(s, e, basis, day_count::DayCountContext::default())
+                .expect("basis needs no context")
         );
     }
+    // Act/365L requires the coupon frequency and next coupon date.
+    let leap = day_count::year_fraction_with_freq(s, e, DayCount::Act365L, 4, s, e);
+    println!(
+        "  {:<20?} -> {leap:.12}  (quarterly coupon)",
+        DayCount::Act365L
+    );
+    // 30E/360 ISDA requires an explicit maturity decision.
+    let isda = day_count::thirty_e_360_isda::fraction(s, e, false);
+    println!(
+        "  {:<20?} -> {isda:.12}  (not maturity)",
+        DayCount::ThirtyE360Isda
+    );
     // ActActIcma needs a reference period — supplied via the freq-aware
     // dispatcher. A regular quarterly period over the same interval gives
     // exactly 1 / freq = 0.25.
@@ -106,7 +115,8 @@ fn main() {
     // Bus/252 needs a business-day predicate — the calendar dispatcher
     // closes over one for us. Result = TARGET2 business days in
     // [Jan 1, Apr 1) / 252.
-    let bus = bus_252_for_calendar(s, e, Calendar::Target2);
+    let bus = calendar::try_bus_252_for_calendar(s, e, Calendar::Target2)
+        .expect("verified TARGET2 interval");
     println!("  {:<20?} -> {bus:.12}  (TARGET2)", DayCount::Bus252);
 
     // ── 3. Date-roll conventions — every roll on the same Saturday ──────
@@ -139,8 +149,8 @@ fn main() {
     // Each calendar's first dispatcher (`is_holiday`) is checked against a
     // single recognisable date from its published list — the same smoke
     // test the unit suite uses, surfaced here as a sanity print.
-    println!("\nis_holiday across the eight named calendars (2024)");
-    let cases: [(Calendar, Date); 8] = [
+    println!("\nHoliday queries (2024, explicit use of unverified historical snapshots)");
+    let cases: [(Calendar, Date); 9] = [
         (
             Calendar::Target2,
             Date::ymd(2024, 12, 25).expect("4. TARGET2 Christmas"),
@@ -150,8 +160,12 @@ fn main() {
             Date::ymd(2024, 6, 23).expect("4. Luxembourg National Day"),
         ),
         (
-            Calendar::UnitedStates,
-            Date::ymd(2024, 7, 4).expect("4. US Independence Day"),
+            Calendar::UnitedStatesNyse,
+            Date::ymd(2024, 7, 4).expect("4. NYSE Independence Day"),
+        ),
+        (
+            Calendar::UnitedStatesFederalReserve,
+            Date::ymd(2024, 7, 4).expect("4. Federal Reserve Independence Day"),
         ),
         (
             Calendar::UnitedKingdom,
@@ -181,7 +195,8 @@ fn main() {
             d.year(),
             d.month(),
             d.day(),
-            is_holiday(d, cal),
+            calendar::try_is_holiday_with_policy(d, cal, CoveragePolicy::AllowProjected)
+                .expect("sample lies within available calendar coverage"),
         );
     }
 
@@ -190,7 +205,8 @@ fn main() {
     // a TARGET2 holiday, 27 Dec is Sunday, so Following lands on Mon
     // 2026-12-28.
     let xmas = Date::ymd(2026, 12, 25).expect("5. adjust — Christmas 2026");
-    let next_biz = adjust(xmas, Roll::Following, Calendar::Target2);
+    let next_biz = calendar::try_adjust(xmas, Roll::Following, Calendar::Target2)
+        .expect("verified TARGET2 roll");
     println!(
         "\nadjust(2026-12-25, Following, TARGET2) -> {:04}-{:02}-{:02}  ({:?})",
         next_biz.year(),
@@ -204,7 +220,8 @@ fn main() {
     // ten weekdays in the window minus that one give 9 business days.
     let may_start = Date::ymd(2026, 5, 1).expect("6. business_days_between — start");
     let may_end = Date::ymd(2026, 5, 15).expect("6. business_days_between — end");
-    let bd = business_days_between(may_start, may_end, Calendar::Target2);
+    let bd = calendar::try_business_days_between(may_start, may_end, Calendar::Target2)
+        .expect("verified TARGET2 count");
     println!(
         "\nbusiness_days_between([2026-05-01, 2026-05-15), TARGET2) = {bd}  (May 1 is Labour Day)"
     );
@@ -221,15 +238,21 @@ fn main() {
     println!("\nJointBusiness EUR/USD (TARGET2 + UnitedStates)");
     println!(
         "  2024-07-04 -> joint biz day = {}  (US closed)",
-        eurusd.is_business_day(jul4),
+        eurusd
+            .try_is_business_day_with_policy(jul4, CoveragePolicy::AllowProjected)
+            .expect("available calendars"),
     );
     println!(
         "  2024-05-01 -> joint biz day = {}  (TARGET2 closed)",
-        eurusd.is_business_day(may1),
+        eurusd
+            .try_is_business_day_with_policy(may1, CoveragePolicy::AllowProjected)
+            .expect("available calendars"),
     );
     println!(
         "  2024-03-15 -> joint biz day = {}  (both open)",
-        eurusd.is_business_day(mar15),
+        eurusd
+            .try_is_business_day_with_policy(mar15, CoveragePolicy::AllowProjected)
+            .expect("available calendars"),
     );
     // Weekends are filtered by the underlying calendars' business-day rule;
     // the joint inherits that, as a sanity check:
@@ -244,7 +267,13 @@ fn main() {
     let coupon = 0.05_f64;
     let period_start = Date::ymd(2026, 1, 15).expect("8. bond — period start");
     let period_end = Date::ymd(2026, 4, 15).expect("8. bond — period end");
-    let yf = day_count::fraction(period_start, period_end, DayCount::Act360);
+    let yf = day_count::try_fraction(
+        period_start,
+        period_end,
+        DayCount::Act360,
+        day_count::DayCountContext::default(),
+    )
+    .expect("Act/360 needs no context");
     let accrued = notional * coupon * yf;
     println!("\nAccrued interest — EUR bond, 5.00% Act/360, 2026-01-15 to 2026-04-15");
     println!(

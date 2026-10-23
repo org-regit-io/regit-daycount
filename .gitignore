@@ -4,8 +4,12 @@
 *.so
 *.dylib
 
-# Lockfile — this is a library crate; the lockfile is not committed.
-Cargo.lock
+# Python oracle caches
+__pycache__/
+*.py[cod]
+.venv/
+
+# Cargo.lock is tracked to reproduce development and release gates.
 
 # Editor / IDE
 *.swp

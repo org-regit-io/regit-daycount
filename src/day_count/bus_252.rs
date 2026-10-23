@@ -37,9 +37,19 @@
 //!     return -fraction(end, start, is_business_day)
 //! ```
 //!
-//! The walk is one day at a time, bounded defensively at `MAX_DAYS` steps
-//! — roughly two centuries — to keep a pathological interval from looping
-//! indefinitely; no real fixed-income instrument crosses that horizon.
+//! The walk is one day at a time. Valid date endpoints bound its length;
+//! no arbitrary horizon truncates the business-day count.
+//!
+//! # Signed intervals and reference APIs
+//!
+//! Reversed accruals negate the count over the normalized `[lower, upper)`
+//! interval, including when an endpoint is not a business day. The Python
+//! oracle executes `QuantLib`'s `Business252` on those ordered endpoints and
+//! applies the explicit signed-interval policy to the reference result.
+//! `QuantLib`'s direct reverse call instead includes the supplied start and
+//! excludes the supplied end when walking backward, so it can differ by one
+//! business day. Reference inputs and their orientation mapping are retained
+//! in the oracle manifest rather than silently assumed interchangeable.
 //!
 //! # Worked example
 //!
@@ -57,17 +67,9 @@
 //!   (Bus/252 numerator definition for LTN, NTN-B, NTN-F).
 //! - B3, *Manual de Apreçamento — Derivativos de Renda Fixa*
 //!   (Bus/252 denominator = 252 for DI futures).
+//! - [`QuantLib` v1.44 reverse endpoint handling](https://github.com/lballabio/QuantLib/blob/v1.44/ql/time/calendar.cpp).
 
 use crate::date::Date;
-
-/// Maximum number of one-day steps the counter walks before bailing out.
-///
-/// Sized for ~200 years (`365 * 200 = 73_000`), which covers every term
-/// structure of any real BRL instrument by orders of magnitude. If the cap
-/// is ever reached — a pathological interval far outside any practical use
-/// — the running count at that point is returned, divided by 252 as usual;
-/// the function never panics and never loops indefinitely.
-const MAX_DAYS: u32 = 73_000;
 
 /// Computes the Bus/252 year fraction between two dates.
 ///
@@ -107,19 +109,14 @@ pub fn fraction(start: Date, end: Date, is_business_day: impl Fn(Date) -> bool) 
     }
 
     // start < end: walk from `start` to `end - 1` inclusive, counting
-    // business days. The loop is bounded defensively at `MAX_DAYS` steps.
+    // business days. Every increment remains at or before the valid `end`.
     let mut count: u32 = 0;
     let mut d = start;
-    let mut steps: u32 = 0;
     while d < end {
-        if steps >= MAX_DAYS {
-            break;
-        }
         if is_business_day(d) {
             count += 1;
         }
         d = d.add_days(1);
-        steps += 1;
     }
     f64::from(count) / 252.0
 }

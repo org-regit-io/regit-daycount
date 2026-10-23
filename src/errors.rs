@@ -3,11 +3,11 @@
 
 //! Typed error enum for date construction and convention dispatch.
 //!
-//! All failure paths return a typed `Result` — no `panic!()`, no `unwrap()`,
-//! no string errors. Each variant carries enough context for the caller to
-//! report precisely what was wrong and where.
+//! Date construction reports structural and range failures as typed errors.
+//! Checked day-count and calendar operations have their own error types in
+//! [`crate::day_count`] and, with the feature enabled, `crate::calendar`.
 //!
-//! A single enum covers the two failure domains the crate can produce:
+//! This enum covers two date-validation failures:
 //!
 //! - [`ValidationError::InvalidDate`] — a `(year, month, day)` triple does
 //!   not name a real Gregorian date (e.g. 31 February, a 0 month).
@@ -29,9 +29,9 @@ use core::fmt;
 /// Error returned when an input cannot be accepted as a valid date or when a
 /// value falls outside the range a convention accepts.
 ///
-/// The crate has a single error type because every failure mode reduces to
-/// one of two shapes: an input that does not name a real date, or an input
-/// that is well-formed in isolation but outside the supported range.
+/// Distinguishes a structurally invalid date from a value outside the
+/// supported date range. Convention and calendar checks use their domain
+/// error types.
 ///
 /// # Examples
 ///

@@ -1,88 +1,41 @@
 // Copyright 2026 Regit.io — Nicolas Koenig
 // SPDX-License-Identifier: Apache-2.0
 
-//! United States — NYSE / Federal Reserve holiday calendar.
+//! United States market calendars: NYSE and Federal Reserve Bank operations.
 //!
-//! Embedded, dated snapshot of the holidays observed by the New York Stock
-//! Exchange and the US Federal Reserve. The NYSE schedule is a superset of
-//! the Federal Reserve operating-day list (the NYSE adds Good Friday); for
-//! the purposes of US bond and equity settlement dates this module models
-//! the NYSE list, which is the conservative — and standard — choice. The
-//! table covers the inclusive window `2020..=2040`.
+//! [`is_holiday`] is the NYSE full-day closure snapshot for 2020–2040.
+//! [`is_federal_reserve_holiday`] implements the separate Reserve Bank rules
+//! over that same available range. Neither represents all US settlement venues.
+//! Early closing sessions count as business days in this date-only model.
 //!
-//! # Holiday rules
+//! NYSE closes Good Friday, unlike the Federal Reserve; the Reserve Banks
+//! close Columbus Day and Veterans Day, unlike NYSE. NYSE does **not** close
+//! the prior Friday for Saturday New Year's Day. For its other fixed-date
+//! holidays, Saturday is observed Friday and Sunday is observed Monday.
+//! Reserve Banks leave the prior Friday open for **every** Saturday holiday.
+//! NYSE Juneteenth begins in 2022. The Federal Reserve raw holiday begins
+//! in 2021; its first additional weekday closure is 2022, because June 19,
+//! 2021 was a Saturday and the preceding Friday remained open.
 //!
-//! | Holiday                                  | Rule                                                                                     |
-//! |------------------------------------------|------------------------------------------------------------------------------------------|
-//! | New Year's Day                           | Jan 1 (observed Fri preceding if Sat; observed Mon following if Sun)                     |
-//! | Martin Luther King Jr. Day               | Third Monday of January                                                                  |
-//! | Washington's Birthday (Presidents' Day)  | Third Monday of February                                                                 |
-//! | Good Friday                              | Easter Sunday − 2 days                                                                   |
-//! | Memorial Day                             | Last Monday of May                                                                       |
-//! | Juneteenth (from 2022)                   | Jun 19 (observed Mon following if Sun; observed Fri preceding if Sat); NYSE since 2022   |
-//! | Independence Day                         | Jul 4 (observed Fri preceding if Sat; observed Mon following if Sun)                     |
-//! | Labor Day                                | First Monday of September                                                                |
-//! | Thanksgiving Day                         | Fourth Thursday of November                                                              |
-//! | Christmas Day                            | Dec 25 (observed Fri preceding if Sat; observed Mon following if Sun)                    |
+//! The NYSE table includes the announced 2025-01-09 Carter mourning closure.
+//! Future exceptional closures cannot be predicted. The 2026–2028 NYSE
+//! schedule and 2026–2030 Reserve Bank schedule were compared to the complete
+//! official lists on 2026-10-23. Other available years are unverified or
+//! projected; a rule-derivation test establishes internal consistency only.
+//! See [`super::coverage`] and the `try_*` APIs for enforced boundaries.
 //!
-//! Discretionary closures are out of scope. The NYSE has from time to time
-//! closed the trading floor for events that no rule predicts — deaths of US
-//! presidents (e.g. George H. W. Bush, 2018-12-05), national days of mourning,
-//! and the four-session weather closure for Hurricane Sandy (2012-10-29 and
-//! 2012-10-30). These dates are published year by year in NYSE notices and
-//! cannot be derived from a calendar rule; they are not included here. A
-//! caller that needs them must overlay a per-year exceptions list of its own.
-//!
-//! # Snapshot
-//!
-//! - Snapshot date: see [`SNAPSHOT_DATE`].
-//! - Coverage (inclusive year range): see [`COVERAGE`].
-//! - Entries: 208 observed holiday dates (10 holidays × 21 years − 2
-//!   Juneteenth dates for 2020 and 2021 when it was not yet a NYSE holiday).
-//!
-//! # References
-//!
-//! - NYSE Holiday Calendar, published at
-//!   <https://www.nyse.com/markets/hours-calendars>.
-//! - Federal Reserve Bank Services holiday schedule, published at
-//!   <https://www.frbservices.org/about/holiday-schedules>.
-//! - SEC / NYSE notices for discretionary closures (e.g. Hurricane Sandy,
-//!   2012-10-29 and 2012-10-30; George H. W. Bush state funeral, 2018-12-05).
-//!
-//! # Verification
-//!
-//! On 2026-05-23 every row of [`HOLIDAYS`] was cross-checked against the
-//! calendar rules in the table above. The check is also encoded as an
-//! in-crate regression test (`every_holiday_row_matches_its_calendar_rule`)
-//! that re-derives the entire snapshot from the rules each run, so future
-//! edits to the table cannot drift from the documented rule set:
-//!
-//! - Fixed-date holidays (New Year's Day, Juneteenth, Independence Day,
-//!   Christmas Day) are weekend-shifted Sat → Fri preceding and Sun → Mon
-//!   following, matching NYSE and Federal Reserve practice.
-//! - Floating Monday holidays (MLK, Washington's Birthday, Memorial Day,
-//!   Labor Day) and Thanksgiving (4th Thursday) are derived with
-//!   [`Date::nth_weekday_of_month`](crate::Date::nth_weekday_of_month).
-//! - Good Friday is derived as
-//!   [`Date::easter_sunday`](crate::Date::easter_sunday) − 2 days using the
-//!   Meeus / Anonymous-Gregorian algorithm.
-//! - Juneteenth rows start in 2022 — the year the NYSE first observed it
-//!   (the federal holiday took effect 2021-06-17).
-//!
-//! For the years 2020 through ~2027 the rule-derived dates are
-//! independently cross-checkable against the NYSE Holiday Calendar and the
-//! Federal Reserve schedule linked above. For later years (publication
-//! windows on both sites only extend ~3 years forward) the rows are
-//! rule-derived; they will match the official lists once published because
-//! the rules themselves are statutory and unchanged.
+//! Sources:
+//! - <https://www.nyse.com/trade/hours-calendars>
+//! - <https://www.frbservices.org/about/holiday-schedules/>
+//! - <https://ir.theice.com/press/news-details/2024/The-New-York-Stock-Exchange-Will-Close-Markets-on-January-9-to-Honor-the-Passing-of-Former-President-Jimmy-Carter-on-National-Day-of-Mourning/default.aspx>
 
 use crate::date::Date;
 
 // ─── Snapshot metadata ───────────────────────────────────────────────────────
 
-/// Date of the NYSE / Federal Reserve holiday-list snapshot embedded in this
-/// module, `YYYY-MM-DD`. Holiday observances are published years in advance
-/// but the static table here is the authoritative copy as of this date.
+/// Date of the original NYSE holiday-list snapshot embedded in this
+/// module, `YYYY-MM-DD`. This is the original data generation date;
+/// the later independent verification horizon is in [`super::coverage`].
 pub const SNAPSHOT_DATE: &str = "2026-05-23";
 
 /// Inclusive `(first_year, last_year)` year range covered by [`HOLIDAYS`].
@@ -92,17 +45,13 @@ pub const COVERAGE: (i32, i32) = (2020, 2040);
 
 // ─── Holiday table ───────────────────────────────────────────────────────────
 
-/// Every observed NYSE / Federal Reserve holiday in
+/// Every embedded NYSE full-day holiday in
 /// `COVERAGE.0..=COVERAGE.1`, sorted ascending so [`is_holiday`] can binary
 /// search the table.
 ///
-/// Each row is a `(year, month, day)` triple of the **observed** holiday
-/// date — the weekend-shift rules in the module docstring have already been
-/// applied, so a row of `(2021, 12, 31)` is the observed date for the
-/// 2022 New Year's Day holiday (2022-01-01 fell on a Saturday).
-///
-/// The list is hand-listed for auditor friendliness — every date can be
-/// checked against the NYSE published calendar without running code.
+/// Rows are observed closure dates, sorted for binary search. A Saturday
+/// New Year's Day has no Friday observation. Entries beyond the verified
+/// horizon are projections and may change with future notices.
 pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     // ─── 2020 ────────────────────────────────────────────────────────────
     (2020, 1, 1),   // 2020-01-01 — New Year's Day
@@ -124,7 +73,6 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2021, 9, 6),   // 2021-09-06 — Labor Day
     (2021, 11, 25), // 2021-11-25 — Thanksgiving Day
     (2021, 12, 24), // 2021-12-24 — Christmas Day (observed; Dec 25 was Sat)
-    (2021, 12, 31), // 2021-12-31 — New Year's Day 2022 (observed; Jan 1 was Sat)
     // ─── 2022 ────────────────────────────────────────────────────────────
     (2022, 1, 17),  // 2022-01-17 — Martin Luther King Jr. Day
     (2022, 2, 21),  // 2022-02-21 — Washington's Birthday
@@ -159,6 +107,7 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2024, 12, 25), // 2024-12-25 — Christmas Day
     // ─── 2025 ────────────────────────────────────────────────────────────
     (2025, 1, 1),   // 2025-01-01 — New Year's Day
+    (2025, 1, 9),   // Carter national day of mourning (NYSE notice)
     (2025, 1, 20),  // 2025-01-20 — Martin Luther King Jr. Day
     (2025, 2, 17),  // 2025-02-17 — Washington's Birthday
     (2025, 4, 18),  // 2025-04-18 — Good Friday
@@ -190,7 +139,6 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2027, 9, 6),   // 2027-09-06 — Labor Day
     (2027, 11, 25), // 2027-11-25 — Thanksgiving Day
     (2027, 12, 24), // 2027-12-24 — Christmas Day (observed; Dec 25 was Sat)
-    (2027, 12, 31), // 2027-12-31 — New Year's Day 2028 (observed; Jan 1 was Sat)
     // ─── 2028 ────────────────────────────────────────────────────────────
     (2028, 1, 17),  // 2028-01-17 — Martin Luther King Jr. Day
     (2028, 2, 21),  // 2028-02-21 — Washington's Birthday
@@ -245,7 +193,6 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2032, 9, 6),   // 2032-09-06 — Labor Day
     (2032, 11, 25), // 2032-11-25 — Thanksgiving Day
     (2032, 12, 24), // 2032-12-24 — Christmas Day (observed; Dec 25 was Sat)
-    (2032, 12, 31), // 2032-12-31 — New Year's Day 2033 (observed; Jan 1 was Sat)
     // ─── 2033 ────────────────────────────────────────────────────────────
     (2033, 1, 17),  // 2033-01-17 — Martin Luther King Jr. Day
     (2033, 2, 21),  // 2033-02-21 — Washington's Birthday
@@ -311,7 +258,6 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2038, 9, 6),   // 2038-09-06 — Labor Day
     (2038, 11, 25), // 2038-11-25 — Thanksgiving Day
     (2038, 12, 24), // 2038-12-24 — Christmas Day (observed; Dec 25 was Sat)
-    (2038, 12, 31), // 2038-12-31 — New Year's Day 2039 (observed; Jan 1 was Sat)
     // ─── 2039 ────────────────────────────────────────────────────────────
     (2039, 1, 17),  // 2039-01-17 — Martin Luther King Jr. Day
     (2039, 2, 21),  // 2039-02-21 — Washington's Birthday
@@ -337,7 +283,7 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
 
 // ─── Lookup ──────────────────────────────────────────────────────────────────
 
-/// Returns `true` if `date` is a NYSE / Federal Reserve holiday under the
+/// Returns `true` if `date` is a NYSE full-day holiday under the
 /// embedded snapshot.
 ///
 /// The decision is a binary search over [`HOLIDAYS`]. Dates outside the
@@ -367,6 +313,50 @@ pub fn is_holiday(date: Date) -> bool {
     }
     let key = (date.year(), date.month(), date.day());
     HOLIDAYS.binary_search(&key).is_ok()
+}
+
+/// True for a Federal Reserve Bank operating holiday within 2020–2040.
+///
+/// Saturday holidays remain on Saturday; only Sunday moves to Monday.
+/// Good Friday is not a Reserve Bank holiday. Dates outside the available
+/// range return `false`; prefer [`super::try_is_holiday`] for checked use.
+#[must_use]
+pub fn is_federal_reserve_holiday(date: Date) -> bool {
+    use crate::date::Weekday;
+    let year = date.year();
+    if year < COVERAGE.0 || year > COVERAGE.1 {
+        return false;
+    }
+    let observed = |month, day| {
+        let d = Date::ymd_unchecked(year, month, day);
+        if d.day_of_week() == Weekday::Sun {
+            d.add_days(1)
+        } else {
+            d
+        }
+    };
+    let monday = |month, n| Date::nth_weekday_of_month(year, month, n, Weekday::Mon).ok();
+    let memorial = Date::ymd_unchecked(year, 5, 31);
+    let memorial = memorial.add_days(-i32::from(match memorial.day_of_week() {
+        Weekday::Mon => 0u8,
+        Weekday::Tue => 1,
+        Weekday::Wed => 2,
+        Weekday::Thu => 3,
+        Weekday::Fri => 4,
+        Weekday::Sat => 5,
+        Weekday::Sun => 6,
+    }));
+    date == observed(1, 1)
+        || Some(date) == monday(1, 3)
+        || Some(date) == monday(2, 3)
+        || date == memorial
+        || (year >= 2021 && date == observed(6, 19))
+        || date == observed(7, 4)
+        || Some(date) == monday(9, 1)
+        || Some(date) == monday(10, 2)
+        || date == observed(11, 11)
+        || Some(date) == Date::nth_weekday_of_month(year, 11, 4, Weekday::Thu).ok()
+        || date == observed(12, 25)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -417,16 +407,16 @@ mod tests {
     }
 
     #[test]
-    fn new_year_2028_saturday_shifts_to_prior_friday() {
-        // 2028-01-01 is a Saturday — observed Fri 2027-12-31.
-        assert!(is_holiday(d(2027, 12, 31)));
+    fn new_year_2028_saturday_has_no_friday_observation() {
+        // NYSE explicitly leaves Friday 2027-12-31 open.
+        assert!(!is_holiday(d(2027, 12, 31)));
         assert!(!is_holiday(d(2028, 1, 1)));
     }
 
     #[test]
-    fn new_year_2022_saturday_shifts_to_prior_friday() {
-        // 2022-01-01 was a Saturday — observed Fri 2021-12-31.
-        assert!(is_holiday(d(2021, 12, 31)));
+    fn new_year_2022_saturday_has_no_friday_observation() {
+        // Saturday New Year does not close the preceding Friday.
+        assert!(!is_holiday(d(2021, 12, 31)));
         assert!(!is_holiday(d(2022, 1, 1)));
     }
 
@@ -479,6 +469,15 @@ mod tests {
         assert!(is_holiday(d(2024, 6, 19)));
     }
 
+    #[test]
+    fn federal_reserve_juneteenth_starts_as_saturday_holiday_in_2021() {
+        // Federal Reserve Board press release of June 17, 2021: Saturday
+        // federal holiday; financial services operate normally Friday/Monday.
+        assert!(is_federal_reserve_holiday(d(2021, 6, 19)));
+        assert!(!is_federal_reserve_holiday(d(2021, 6, 18)));
+        assert!(!is_federal_reserve_holiday(d(2021, 6, 21)));
+    }
+
     // ─── Out-of-coverage returns false ───────────────────────────────────
 
     #[test]
@@ -521,9 +520,9 @@ mod tests {
 
     #[test]
     fn holidays_table_entry_count() {
-        // 10 holidays × 21 years − 2 (Juneteenth not observed in 2020, 2021)
-        // = 208 observed dates.
-        assert_eq!(HOLIDAYS.len(), 208);
+        // 208 regular dates minus four Saturday New Year observations,
+        // plus the Carter national day of mourning.
+        assert_eq!(HOLIDAYS.len(), 205);
     }
 
     #[test]
@@ -575,13 +574,17 @@ mod tests {
 
         let (lo, hi) = COVERAGE;
         for y in lo..=hi {
-            // New Year's Day. Listed under year `y` only when the shifted
-            // date is still in `y`; when Jan 1 falls on a Saturday the
-            // observed date is 31 Dec of `y - 1` and is added by the
-            // `nyd_next` branch in that earlier iteration.
-            let nyd = shift_weekend(Date::ymd(y, 1, 1).expect("Jan 1 within coverage"));
-            if nyd.year() == y {
+            // Saturday New Year's Day has no NYSE weekday observation.
+            // Sunday shifts to Monday; all other weekdays keep January 1.
+            let jan1 = Date::ymd(y, 1, 1).expect("Jan 1 within coverage");
+            let nyd = shift_weekend(jan1);
+            if jan1.day_of_week() != Weekday::Sat {
                 expected[n] = (nyd.year(), nyd.month(), nyd.day());
+                n += 1;
+            }
+
+            if y == 2025 {
+                expected[n] = (2025, 1, 9);
                 n += 1;
             }
 
@@ -626,15 +629,6 @@ mod tests {
             let xm = shift_weekend(Date::ymd(y, 12, 25).expect("Dec 25 within coverage"));
             expected[n] = (xm.year(), xm.month(), xm.day());
             n += 1;
-
-            // The observed New Year's Day of `y + 1` that shifts back into
-            // year `y` (only when Jan 1 of `y + 1` falls on a Saturday).
-            let nyd_next =
-                shift_weekend(Date::ymd(y + 1, 1, 1).expect("Jan 1 of y+1 within coverage+1"));
-            if nyd_next.year() == y {
-                expected[n] = (nyd_next.year(), nyd_next.month(), nyd_next.day());
-                n += 1;
-            }
         }
 
         assert_eq!(

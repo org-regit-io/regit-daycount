@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: If you use Regit Daycount in research or published work, please cite this software.
+type: software
+title: Regit Daycount
+version: 1.1.0
+license: Apache-2.0
+authors:
+  - family-names: Koenig
+    given-names: Nicolas
+    affiliation: Regit
+url: https://github.com/org-regit-io/regit-daycount
+repository-code: https://github.com/org-regit-io/regit-daycount

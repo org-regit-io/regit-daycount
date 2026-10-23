@@ -1,65 +1,18 @@
 // Copyright 2026 Regit.io — Nicolas Koenig
 // SPDX-License-Identifier: Apache-2.0
 
-//! Catalogue of holiday calendars and their dispatcher.
+//! Market-specific holiday calendars and business-day operations.
 //!
-//! A calendar is the rule that decides, for a given date, whether the
-//! market it names is open. Five operations depend on it: deciding whether
-//! a date is itself a business day, adjusting a non-business date forward
-//! or backward, counting business days between two dates, and (under
-//! Bus/252) computing year fractions over them.
+//! The `try_*` queries and walks reject unsupported and unverified dates.
+//! [`CoveragePolicy::AllowProjected`](crate::calendar::CoveragePolicy::AllowProjected) explicitly permits the available
+//! unverified or projected data. Inspect [`coverage`](crate::calendar::coverage) before selecting a market.
+//! Legacy Boolean/date-returning functions remain permissive: outside a
+//! snapshot they treat holidays as absent, and defensive walk limits can
+//! return partial results. Use checked functions for financial calculations.
 //!
-//! Seven named calendars are catalogued here; each gets its own submodule
-//! with either a fixed-rule generator (TARGET2 — Easter-derived, six
-//! dates a year) or a dated snapshot of the exchange's or central bank's
-//! published list (everything else, covering 2020–2040 inclusive):
-//!
-//! ```text
-//! Target2         ECB fixed rule — Easter-derived; six dates a year
-//! UnitedStates    NYSE / Federal Reserve published list
-//! UnitedKingdom   Bank of England bank holiday schedule
-//! Japan           Japan Exchange Group / National Holidays Act
-//! Switzerland     SIX Swiss Exchange published schedule
-//! HongKong        HKEX published schedule
-//! Singapore       SGX published schedule
-//! ```
-//!
-//! Two compound kinds — `Composite` (union of holidays) and
-//! `JointBusiness` (intersection of business days) — let multiple named
-//! calendars combine; both live in the `composite` submodule.
-//!
-//! # Dispatchers
-//!
-//! - `is_holiday` — true if `date` is a holiday under `cal`. Weekends are
-//!   **not** counted as holidays here — they are handled separately by
-//!   `is_weekend` / `is_business_day`.
-//! - `is_weekend` — true if `date` is Saturday or Sunday.
-//! - `is_business_day` — true if `date` is neither a weekend nor a
-//!   holiday under `cal`.
-//! - `adjust` — applies a [`Roll`](crate::Roll) to `date` under `cal` by
-//!   forwarding to [`roll::apply`](crate::roll::apply) with `cal`'s
-//!   business-day predicate.
-//! - `business_days_between` — counts business days in `[start, end)`
-//!   under `cal`. Walks one day at a time with a defensive cap.
-//! - `bus_252_for_calendar` — convenience wrapper around
-//!   [`crate::day_count::bus_252::fraction`] that closes over `cal`'s
-//!   business-day predicate.
-//!
-//! All five dispatchers are `Copy`-by-value, allocation-free, and
-//! `no_std`-clean.
-//!
-//! # References
-//!
-//! - ECB Decision on the TARGET2 closing days (the six fixed dates).
-//! - Loi du 21 juillet 1928 sur le droit du travail (Luxembourg labour law)
-//!   and Loi du 28 février 2019 fixant les jours fériés légaux (the law
-//!   that added Europe Day to the LU schedule).
-//! - NYSE / Federal Reserve Bank of New York published holiday schedules.
-//! - Bank of England bank holiday schedule.
-//! - Japan Exchange Group calendar and the Japanese National Holidays Act.
-//! - SIX Swiss Exchange trading calendar.
-//! - HKEX trading calendar.
-//! - SGX trading calendar.
+//! [`Calendar::UnitedStates`] is the legacy NYSE alias, **not** a Federal
+//! Reserve calendar. Partial trading sessions remain business days; the
+//! date-only model represents full-day closures only.
 
 use crate::date::{Date, Weekday};
 use crate::roll::{self, Roll};
@@ -68,7 +21,7 @@ use crate::roll::{self, Roll};
 
 /// A named holiday calendar.
 ///
-/// The variants name the seven primary calendars this crate ships. The
+/// The variants name the market calendars this crate ships. The
 /// compound kinds (a union of holidays and an intersection of business
 /// days) live in [`composite`], so that a primary calendar always has the
 /// `Copy`-into-an-enum-tag shape that the dispatcher matches on.
@@ -85,14 +38,20 @@ use crate::roll::{self, Roll};
 pub enum Calendar {
     /// TARGET2 — the euro-area RTGS calendar, defined by ECB fixed rule.
     Target2,
-    /// Luxembourg — national bank holidays under the Loi du 21 juillet
-    /// 1928 (and the Loi du 28 février 2019 that added Europe Day).
-    /// Rule-based — every date is fixed or Easter-derived. The natural
-    /// pairing with TARGET2 for Luxembourg-domiciled UCITS / SIF NAV
-    /// schedules (compose them via [`JointBusiness`]).
+    /// Luxembourg full-day bank holidays, including Good Friday.
+    /// Christmas Eve's afternoon-only closure is outside this date-only model.
+    /// See [`coverage`] for the supported and verified horizons.
     Luxembourg,
-    /// United States — NYSE / Federal Reserve published holiday list.
+    /// Legacy alias of [`Calendar::UnitedStatesNyse`]. It has never
+    /// represented Federal Reserve operating days; use the explicit variant.
     UnitedStates,
+    /// New York Stock Exchange full-day trading closures. Early closing
+    /// sessions remain business days. Includes the 2025 Carter closure.
+    UnitedStatesNyse,
+    /// Federal Reserve Bank operating holidays. Good Friday is open;
+    /// Columbus Day and Veterans Day are closed. Saturday fixed holidays
+    /// do not close the preceding Friday. This is not the 24/7 `FedNow` service.
+    UnitedStatesFederalReserve,
     /// United Kingdom — Bank of England bank holiday schedule.
     UnitedKingdom,
     /// Japan — Japan Exchange Group / National Holidays Act schedule.
@@ -107,6 +66,7 @@ pub enum Calendar {
 
 // ─── Per-calendar submodules ─────────────────────────────────────────────────
 
+mod checked;
 pub mod composite;
 pub mod hong_kong;
 pub mod japan;
@@ -117,13 +77,14 @@ pub mod target2;
 pub mod united_kingdom;
 pub mod united_states;
 
+pub use checked::*;
 pub use composite::{Composite, JointBusiness};
 
 // ─── Dispatchers ─────────────────────────────────────────────────────────────
 
 /// True if `date` falls on a Saturday or Sunday.
 ///
-/// All seven calendars in this crate use the Western Sat/Sun weekend; the
+/// All named calendars in this crate use the Western Sat/Sun weekend; the
 /// dispatcher applies this uniformly. (Markets that follow a Fri/Sat
 /// weekend — Saudi Arabia, the UAE pre-2022 — are not currently modelled.)
 ///
@@ -148,7 +109,7 @@ pub fn is_weekend(date: Date) -> bool {
 /// here. Use [`is_business_day`] for the combined "neither a holiday nor a
 /// weekend" check.
 ///
-/// For the six snapshot-based calendars (everything except TARGET2), dates
+/// For snapshot-based calendars, dates
 /// outside the embedded `COVERAGE` range return `false`. The bound is
 /// documented in each submodule's docstring.
 ///
@@ -170,7 +131,8 @@ pub fn is_holiday(date: Date, cal: Calendar) -> bool {
     match cal {
         Calendar::Target2 => target2::is_holiday(date),
         Calendar::Luxembourg => luxembourg::is_holiday(date),
-        Calendar::UnitedStates => united_states::is_holiday(date),
+        Calendar::UnitedStates | Calendar::UnitedStatesNyse => united_states::is_holiday(date),
+        Calendar::UnitedStatesFederalReserve => united_states::is_federal_reserve_holiday(date),
         Calendar::UnitedKingdom => united_kingdom::is_holiday(date),
         Calendar::Japan => japan::is_holiday(date),
         Calendar::Switzerland => switzerland::is_holiday(date),

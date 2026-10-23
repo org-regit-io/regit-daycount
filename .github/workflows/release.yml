@@ -13,91 +13,147 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
   verify:
     name: Verify before publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
 
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Install minimum supported Rust
+        run: rustup toolchain install 1.85.0 --profile minimal
+
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: Validate release identity
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            test "$GITHUB_REF_NAME" = "v$VERSION" || {
+              echo "Release tag must match Cargo.toml version v$VERSION" >&2
+              exit 1
+            }
+          elif [ "$DRY_RUN" != "true" ]; then
+            echo "Publication requires a matching version tag; branch runs must be dry runs." >&2
+            exit 1
+          fi
+          grep -F "## [$VERSION]" CHANGELOG.md >/dev/null || {
+            echo "CHANGELOG.md has no release section for $VERSION" >&2
+            exit 1
+          }
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Test (no default features)
-        run: cargo test --no-default-features
+        run: cargo test --no-default-features --locked
+
+      - name: Build library at MSRV (both feature configurations)
+        run: |
+          cargo +1.85.0 build --lib --all-features --locked
+          cargo +1.85.0 build --lib --no-default-features --locked
+
+      - name: Install pinned independent oracle
+        run: |
+          python3 -m venv /tmp/daycount-oracle
+          /tmp/daycount-oracle/bin/python -m pip install -r validation/requirements.txt
+
+      - name: Regenerate independent fixtures and compare Rust
+        run: /tmp/daycount-oracle/bin/python validation/oracle.py --check --rust
+
+      - name: Normal and build dependency graph is empty
+        run: test "$(cargo tree --edges normal,build --prefix none --locked | wc -l)" -eq 1
+
+      - name: Audit dependency graph
+        uses: EmbarkStudios/cargo-deny-action@v2.1.1
+
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: '-D warnings'
+        run: cargo doc --no-deps --all-features --locked
 
       - name: WASM build
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: cargo build --target wasm32-unknown-unknown --release --locked
 
-      - name: no_std build
-        run: cargo build --target thumbv7em-none-eabi --no-default-features
+      - name: no_std build (both feature configurations)
+        run: |
+          cargo build --target thumbv7em-none-eabi --no-default-features --locked
+          cargo build --target thumbv7em-none-eabi --locked
+
+      - name: Verify crates.io publication dry run
+        run: cargo publish --dry-run --locked
 
   publish:
     name: Publish to crates.io
     needs: verify
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
 
-      # cargo reads CARGO_REGISTRY_TOKEN from the environment automatically,
-      # so --token is not needed and the secret never appears on the command
-      # line. DRY_RUN is passed via env (not ${{ }} interpolation in shell)
-      # to avoid template injection.
+      # Credentials stay in the environment and are never passed on the command line.
       - name: Publish regit-daycount
+        id: publish
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           if [ "$DRY_RUN" = "true" ]; then
-            cargo publish --dry-run --allow-dirty
+            cargo publish --dry-run --locked
+            echo "published=false" >> "$GITHUB_OUTPUT"
           else
-            cargo publish
+            cargo publish --locked
+            echo "published=true" >> "$GITHUB_OUTPUT"
           fi
 
   github_release:
     name: GitHub Release
     needs: publish
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.publish.outputs.published == 'true' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Extract changelog section for this tag
-        id: changelog
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG#v}"
-          # Extract the section between [VERSION] and the next ## heading
+          VERSION="${GITHUB_REF_NAME#v}"
           awk -v ver="$VERSION" '
-            /^## \[/{ if (found) exit; if ($0 ~ "\\[" ver "\\]") found=1; next }
+            /^## \[/{ if (found) exit; if (index($0, "[" ver "]")) found=1; next }
             found
           ' CHANGELOG.md > release_notes.md
-          echo "Extracted release notes for v$VERSION:"
-          cat release_notes.md
+          test -s release_notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v3.0.3
         with:
           body_path: release_notes.md
           draft: false

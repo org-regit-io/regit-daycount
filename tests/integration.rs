@@ -14,8 +14,9 @@
 //! - mod properties — proptest invariants
 //! - mod cross_oracle — QuantLib daycounters test-suite vectors
 //!   transcribed verbatim (with citing line numbers) plus hand-derived
-//!   vectors for the conventions QuantLib does not carry (Act/365L,
-//!   NL/365, our Bus/252 against a weekends-only / TARGET2 predicate)
+//!   vectors for Act/365L and
+//!   Bus/252 against a weekends-only / TARGET2 predicate; generated
+//!   independent results live in oracle_fixtures.rs
 //! - mod cross_module — Date ⇄ roll ⇄ calendar ⇄ day_count interactions
 //!   (the integration the unit tests do not exercise)
 
@@ -269,7 +270,7 @@ mod invalid {
     /// A snapshot calendar queried outside its coverage window returns
     /// `false`, not a panic. The US snapshot starts in 2020; 2019-12-25
     /// is a real US holiday but lies outside the embedded table, and the
-    /// lookup must report the conservative `false`.
+    /// legacy lookup returns `false`; checked queries reject the unknown date.
     #[cfg(feature = "calendars")]
     #[test]
     fn out_of_coverage_calendar_returns_false_not_panic() {
@@ -375,8 +376,8 @@ mod properties {
         })]
 
         /// For every day-count basis except `OneOne` (definitionally 1.0),
-        /// `Bus252` (NaN through the dispatcher), and `ActActIcma` (NaN
-        /// through the dispatcher), `fraction(d, d, basis) == 0.0`.
+        /// and context-dependent conventions (NaN through the dispatcher),
+        /// `fraction(d, d, basis) == 0.0`.
         #[test]
         fn prop_fraction_is_zero_on_zero_length(d in arb_date()) {
             for &basis in &[
@@ -385,8 +386,6 @@ mod properties {
                 DayCount::ActActIsda,
                 DayCount::Thirty360BondBasis,
                 DayCount::ThirtyE360,
-                DayCount::ThirtyE360Isda,
-                DayCount::Act365L,
                 DayCount::Nl365,
             ] {
                 let f = day_count::fraction(d, d, basis);
@@ -423,68 +422,9 @@ mod properties {
         }
     }
 
-    // `is_holiday` is a pure function of `(date, calendar)` — two calls
-    // return the same value. Property-checked across every named calendar.
-    // The neighbouring `prop_is_weekend_xor_business_day_or_holiday`
-    // property is grouped into the same `proptest!` block because both
-    // depend on the `calendars` feature.
-    #[cfg(feature = "calendars")]
-    proptest! {
-        #![proptest_config(ProptestConfig {
-            cases: 256,
-            ..ProptestConfig::default()
-        })]
-
-        #[test]
-        fn prop_is_holiday_is_deterministic(d in arb_date()) {
-            for &cal in &[
-                Calendar::Target2,
-                Calendar::UnitedStates,
-                Calendar::UnitedKingdom,
-                Calendar::Japan,
-                Calendar::Switzerland,
-                Calendar::HongKong,
-                Calendar::Singapore,
-            ] {
-                prop_assert_eq!(
-                    calendar::is_holiday(d, cal),
-                    calendar::is_holiday(d, cal),
-                );
-            }
-        }
-
-        // Exactly one of {business_day, non-business} holds for every
-        // date — and `non-business` decomposes as `weekend OR holiday`.
-        // The two cases (weekend and holiday) may both fire on the same
-        // date when a fixed-date holiday falls on a Saturday or Sunday
-        // (e.g. Christmas Day in years where 25 December is on a Sat),
-        // so we partition into business vs non-business, then check the
-        // non-business set is exactly `weekend OR holiday`.
-        #[test]
-        fn prop_is_weekend_xor_business_day_or_holiday(d in arb_date()) {
-            for &cal in &[
-                Calendar::Target2,
-                Calendar::UnitedStates,
-                Calendar::UnitedKingdom,
-                Calendar::Japan,
-                Calendar::Switzerland,
-                Calendar::HongKong,
-                Calendar::Singapore,
-            ] {
-                let wknd = calendar::is_weekend(d);
-                let hol = calendar::is_holiday(d, cal);
-                let biz = calendar::is_business_day(d, cal);
-                // Exactly one of `business_day` / `non-business` is true.
-                prop_assert!(
-                    biz != (wknd || hol),
-                    "biz/non-biz partition fails at {:?} ({:?})", d, cal,
-                );
-                // `is_business_day` is the crate's documented
-                // composition `!is_weekend && !is_holiday`.
-                prop_assert_eq!(biz, !wknd && !hol);
-            }
-        }
-    }
+    // Calendar truth comes from the committed independent fixtures and
+    // checked-coverage regression tests, rather than comparing predicates
+    // with their own definitions on mostly out-of-coverage dates.
 
     /// `OneOne` returns `1.0` even on a zero-length interval — the
     /// definitional case the broader zero-length property has to skip.
@@ -526,15 +466,14 @@ mod properties {
 ///   hard-coded vectors). The hand-derived vectors below are computed
 ///   directly from the §4.16(e) / §4.16(d) algorithms and round-trip
 ///   through `days_between`.
-/// - Act/365L, NL/365 — neither is a QuantLib day counter; vectors are
-///   hand-derived per the module-level docstrings.
-/// - Bus/252 — QuantLib carries `Business252(Brazil)`, which depends on
-///   Brazilian B3 / ANBIMA holidays. This crate does not ship a Brazilian
-///   calendar (the snapshot tables cover TARGET2 / US / UK / JP / CH / HK
-///   / SG only), so QuantLib's Bus/252 numbers cannot be reproduced
-///   without bolting on a Brazil snapshot. We cross-check the algorithm
-///   against a weekends-only predicate instead, which is verifiable by
-///   inspection.
+/// - Act/365L has no direct QuantLib counter. These examples explicitly
+///   supply coupon context; the generated fixtures execute FinancePy reference cases.
+/// - NL/365 is QuantLib Actual365Fixed::NoLeap; generated fixtures exercise
+///   that actual implementation, including both leap-day boundaries.
+/// - Bus/252 — the historical examples below use hand-derived predicates.
+///   The generated oracle separately executes QuantLib Business252(TARGET)
+///   and validates both Rust public paths for forward/equal intervals.
+///   Reverse endpoint semantics differ and are documented in validation/README.md.
 /// - 1/1 — definitionally constant; the per-module test covers it.
 mod cross_oracle {
     use super::*;
@@ -951,19 +890,19 @@ mod cross_oracle {
     fn hand_act_365l_full_non_leap_year() {
         let s = Date::ymd(2025, 1, 1).unwrap();
         let e = Date::ymd(2026, 1, 1).unwrap();
-        let f = day_count::fraction(s, e, DayCount::Act365L);
+        let f = day_count::year_fraction_with_freq(s, e, DayCount::Act365L, 1, s, e);
         assert!((f - 1.0).abs() < TOL, "{f}");
     }
 
     /// Act/365L — Q3 2024 (after the leap day). 2024-07-01 →
-    /// 2024-10-01 = 92 days; 2024-02-29 NOT in [start, end) →
-    /// denominator 365. f = 92/365.
+    /// 2024-10-01 = 92 days; quarterly coupon ends in a leap year →
+    /// denominator 366. f = 92/366.
     #[test]
     fn hand_act_365l_q3_2024_after_leap() {
         let s = Date::ymd(2024, 7, 1).unwrap();
         let e = Date::ymd(2024, 10, 1).unwrap();
-        let f = day_count::fraction(s, e, DayCount::Act365L);
-        assert!((f - 92.0_f64 / 365.0).abs() < TOL, "{f}");
+        let f = day_count::year_fraction_with_freq(s, e, DayCount::Act365L, 4, s, e);
+        assert!((f - 92.0_f64 / 366.0).abs() < TOL, "{f}");
     }
 
     /// Act/365L — straddles 2024-02-29. 2023-12-01 → 2024-06-01 = 31 +
@@ -973,7 +912,7 @@ mod cross_oracle {
     fn hand_act_365l_straddle_leap_day_2024() {
         let s = Date::ymd(2023, 12, 1).unwrap();
         let e = Date::ymd(2024, 6, 1).unwrap();
-        let f = day_count::fraction(s, e, DayCount::Act365L);
+        let f = day_count::year_fraction_with_freq(s, e, DayCount::Act365L, 2, s, e);
         assert!((f - 183.0_f64 / 366.0).abs() < TOL, "{f}");
         // Exact half — the leap-aware denominator is the whole point.
         assert!((f - 0.5).abs() < TOL, "{f}");

@@ -62,75 +62,63 @@ document.
 - **Date primitive.** The single date type is `Date`, a proleptic Gregorian
   `(year, month, day)` triple. The accepted year range is
   `1583..=9999` — the Gregorian calendar took effect in October 1582, and
-  from 1583 onward every day-count and holiday-calendar rule this crate
-  implements is defined uniformly. Construction is validated by
+  the date primitive accepts that range. Historical market-calendar
+  coverage is a separate constraint exposed by `calendar::coverage`. Construction is validated by
   `Date::ymd`; out-of-range or impossible triples (29 February in a
   non-leap year, day 31 of April) are rejected with the typed
   `ValidationError`. There is no second date type — every fraction, roll
   and calendar takes and returns `Date` values.
-- **Half-open interval `[start, end)`.** Every day count in this crate is
-  end-exclusive, start-inclusive. `days_between(2026-01-01, 2026-01-02)`
-  returns `1`, not `2`. The same convention applies to leap-day inclusion
-  (Act/365L, NL/365), to business-day counts (Bus/252,
-  `business_days_between`), and to the comparison `start <= ymd(y, 2, 29) <
-  end` that decides whether a given 29 February belongs to a period. The
-  half-open form is the single convention the standards (ISDA §4.16, ICMA
-  Rule 251) themselves use; mixing in a closed-interval count anywhere is a
-  bug.
-- **Inverted intervals.** `start > end` is not rejected — some callers
-  compute reverse-period accruals. Every fraction returns the natural
-  negation of the forward result: `fraction(end, start) == -fraction(start,
-  end)`, exactly. The two exceptions are `1/1` (which returns `1.0` for
-  every input, including the inverted one, because the convention is
-  definitional) and the dispatcher arms that return `f64::NAN` (which
-  propagate NaN by IEEE-754).
+- **Interval endpoints.** Actual day differences and business-day counts
+  use `[start, end)`. NL/365 removes leap days in `(start, end]`, matching
+  QuantLib NoLeap. Annual Act/365L tests `(accrual_start, next_coupon]`.
+  These denominator and numerator adjustments have convention-specific
+  endpoint rules; there is no universal leap-day inclusion rule.
+- **Inverted intervals.** Actual-day counters and NL/365 negate the
+  forward result. Context-aware ICMA and Act/365L normalize accrual bounds
+  for validation and retain the numerator's sign. Do not assume all
+  conventions are antisymmetric: 30/360 endpoint rewrites can differ in
+  reverse order; `1/1` is always 1. Context-free calls needing additional
+  data return NaN.
 - **Weekday rule.** Saturday and Sunday are the universal weekend; every
   calendar in this crate uses the Western Sat/Sun convention. `is_weekend`
   reports this independently of any calendar; `is_business_day(date, cal)`
   is the documented composition `!is_weekend(date) && !is_holiday(date,
   cal)`. Markets with a Fri/Sat weekend (Saudi Arabia, the UAE pre-2022)
   are out of scope.
-- **Holiday-on-weekend reporting.** A fixed-date holiday that falls on a
-  Saturday or Sunday is still reported by `is_holiday` for its rule date.
-  The schedule does not "shift" it; the weekend test composes with the
-  holiday test through `is_business_day`. For the dated-snapshot calendars
-  (US, UK, JP, CH, HK, SG) the *observed* shift is encoded into the
-  snapshot itself (so e.g. the snapshot lists 2026-07-03 — the observed
-  Independence Day — alongside 2026-07-04 only when the published list
-  records both).
+- **Holiday-on-weekend reporting.** Named-holiday queries follow each
+  market's published date convention. TARGET2 and Luxembourg retain fixed
+  rule dates; Singapore retains Saturday nominal holidays and substitutes
+  Sunday dates. SIX and HKEX retain observed weekday trading closures.
+  Other snapshot calendars retain their independently referenced named
+  dates and observation rules. Business-day classification always closes
+  Saturdays and Sundays independently of the named-holiday set.
 - **Holiday detection is calendar-only.** `is_holiday(date, cal)` reports
   true *only* for calendar holidays; weekends are out of scope here.
   Combine with `is_weekend` (or use the `is_business_day` wrapper) for the
   full "market open?" predicate.
-- **Out-of-coverage calendar lookups.** The six snapshot calendars (US, UK,
-  JP, CH, HK, SG) embed a dated table whose coverage range is `(2020,
-  2040)` inclusive, with `SNAPSHOT_DATE = "2026-05-23"` recorded in the
-  source. A lookup for a date outside the coverage window returns `false`
-  — the conservative answer — never a panic and never an extrapolation.
-  Auditors should pin the snapshot date when reporting calendar validity,
-  because the published schedules are revised continually. TARGET2 is the
-  exception: it is fully rule-based and exact for every year in the
-  supported range.
-- **Verification, not trust.** The `DayCount` enum dispatches a typed
-  variant to the algorithm of the governing standard. The caller cannot
-  pass a free-form rule and have it executed — every computation runs the
-  cited procedure verbatim. A wrong cashflow caused by a silently-misapplied
-  convention is the worst possible failure, and this crate is the
-  executable form of the specification so that the rule and the code
-  cannot drift.
-- **NaN as the cannot-compute sentinel.** Two `DayCount` variants need
-  information the two-argument dispatcher cannot supply on its own:
-  `ActActIcma` needs a reference period and frequency, and `Bus252` needs
-  a business-day predicate. For both, `day_count::fraction(start, end,
-  basis)` returns `f64::NAN`. NaN is chosen deliberately: it propagates
-  loudly through arithmetic — any downstream multiplication produces NaN
-  in turn — where a silent `0.0` would absorb the misuse and produce a
-  wrong cashflow with no warning. Callers route through
-  `year_fraction_with_freq` (for ICMA) or the per-module
-  `bus_252::fraction` (for Bus/252) with the missing input.
-  `ThirtyE360Isda` similarly takes an extra `end_is_maturity` flag the
-  dispatcher cannot infer; the dispatcher defaults it to `false` and the
-  full signature lives at `thirty_e_360_isda::fraction`.
+- **Checked calendar coverage.** `calendar::try_*` functions return
+  `CalendarError` for unsupported dates. `CoveragePolicy::VerifiedOnly`
+  is the default and requires primary-source verification for the date;
+  `AllowProjected` explicitly permits the wider supported rule/snapshot
+  horizon. `calendar::coverage` records both. Every date touched by a
+  checked walk is validated, including a roll that leaves a verified year.
+  Walk limits and date-range escapes are errors, never partial answers.
+  Legacy snapshot lookup outside 2020–2040 returns `false` for a holiday;
+  this is unknown data, and is unsafe to interpret as proof of opening.
+- **Verification scope.** Referenced standards describe the intended
+  implementation. Executed independent results are committed under
+  `validation/`; their sources, versions and limitations are recorded
+  separately from self-derived examples. A rule-based projection or a
+  match to another library does not establish an officially published
+  future holiday schedule.
+- **Required context.** `day_count::try_fraction` returns `DayCountError`
+  if Act/365L or ICMA lacks coupon context, 30E/360 ISDA lacks an explicit
+  maturity flag, or Bus/252 lacks a business-day predicate. Use
+  `try_fraction_with_business_days` for a caller-owned predicate, or the
+  checked calendar wrapper for calendar coverage validation. The legacy
+  `fraction` returns NaN for these four conventions. The frequency-aware
+  dispatcher supplies ICMA and Act/365L; it cannot infer maturity or a
+  calendar. Invalid legacy ICMA inputs return NaN, not zero.
 - **Tolerance.** The crate's working numeric slack is `1e-12` — loose
   enough that a benign last-bit rounding never causes a spurious test
   failure, tight enough that any drift large enough to mis-state a cashflow
@@ -150,7 +138,7 @@ document.
 - **No allocation, no `std`.** The crate is `#![no_std]` and
   `#![forbid(unsafe_code)]`. `Date` is a `Copy` triple, every algorithm is
   hand-rolled integer arithmetic, holiday tables are static sorted arrays,
-  and there is no runtime dependency. The same audited code runs in a
+  and there is no runtime dependency. The same calculation code runs in a
   backend service, a WASM bundle, or on an embedded device.
 
 ---
@@ -473,10 +461,10 @@ case — the calculation period sits inside (or coincides with) one
 reference coupon period. Irregular (long / short) first or last coupons
 require the caller to pre-decompose into regular sub-periods and sum.
 
-Defensive behaviour: `freq == 0` or `ref_start == ref_end` returns `0.0`
-rather than NaN — both are caller-side precondition violations and the
-chosen sentinel avoids propagating an undefined value through downstream
-cashflow arithmetic.
+Checked calls reject zero frequency, empty or inverted reference periods,
+and accrual bounds outside the reference period with `DayCountError`.
+The legacy function returns NaN for invalid inputs. Multi-period stub
+construction is outside this API; split nominal periods explicitly.
 
 ### Worked example — full semi-annual period
 
@@ -618,8 +606,9 @@ of every February-maturing instrument that quotes on 30E/360 ISDA — a
 oracle-matching tolerance.
 
 The signature carries an extra `end_is_maturity` flag the two-argument
-dispatcher cannot infer; `day_count::fraction` defaults it to `false`, so
-the maturity case must call `thirty_e_360_isda::fraction` directly.
+dispatcher cannot infer; `day_count::fraction` returns NaN. Supply
+`DayCountContext::end_is_maturity` to `try_fraction` or call
+`thirty_e_360_isda::fraction` directly with the flag.
 
 ### Structure
 
@@ -673,107 +662,78 @@ ISDA 2006 Definitions §4.16(h), *30E/360 (ISDA)*.
 
 ## Act/365L — ICMA — `src/day_count/act_365l.rs`
 
-Act/365L (Actual/365 Leap-year-sensitive) is the "leap-aware" cousin of
-Act/365F: the numerator is the same signed count of actual calendar days
-separating the two dates, but the denominator switches to 366 whenever a
-29 February falls inside the period and stays at 365 otherwise. The
-convention is used for sterling floating-rate notes whose coupon basis
-must reflect the presence of a leap day inside the accrual window.
+Act/365L requires coupon frequency and the next coupon date. A two-date
+interval alone cannot identify the denominator. Supply a `CouponPeriod`
+through `DayCountContext` or use `year_fraction_with_freq`.
 
 ### Structure
 
 ```text
-numerator   = days_between(start, end)                   // signed
-denominator = 366 if any 29 February d satisfies start <= d < end
-                  (or end <= d < start for inverted intervals)
-              else 365
-f           = numerator / denominator
+numerator = days_between(start, end)
+annual:    denominator = 366 if February 29 falls in
+                          (normalized accrual start, ref_end], else 365
+nonannual: denominator = 366 if ref_end.year is a leap year, else 365
+fraction = numerator / denominator
 ```
 
-The leap-day inclusion test is **start-inclusive, end-exclusive** —
-`start <= ymd(y, 2, 29) < end` — exactly matching the half-open
-convention `days_between` uses for the numerator. So a period anchored on
-a leap-day boundary picks up that 29 February only when it sits on the
-`start` edge, never when it sits on the `end` edge. For an inverted
-interval the test is symmetric (`end <= ymd(y, 2, 29) < start`), keeping
-`fraction(end, start) == -fraction(start, end)` exact.
+The annual rule examines the next coupon date even for a partial accrual.
+Coupon bounds must be ordered, frequency must be nonzero, and the accrual
+must fit within the supplied reference period. Reverse accruals preserve
+the signed numerator with the same normalized coupon context.
 
-### Worked example — straddling 2024-02-29
+### Worked example — quarterly coupon after leap day
 
 ```text
-start = 2023-12-01, end = 2024-06-01
-days  = 31 (Dec) + 31 (Jan) + 29 (Feb 2024) + 31 (Mar) + 30 (Apr)
-      + 31 (May) = 183
-2024-02-29 ∈ [2023-12-01, 2024-06-01) → denominator = 366
-f     = 183 / 366 = 0.5
+start = 2024-04-01, end = 2024-07-01
+ref_start = start, ref_end = end, frequency = 4
+actual days = 91; next coupon is in leap year 2024
+fraction = 91 / 366 = 0.248633879781421
 ```
 
-Asserted in `tests/integration.rs::cross_oracle::
-hand_act_365l_straddle_leap_day_2024`. The same module also pins
-`hand_act_365l_full_non_leap_year` (= 1.0 for a 365-day non-leap year)
-and `hand_act_365l_q3_2024_after_leap` (= 92/365 for an interval that
-does *not* contain 2024-02-29, exercising the half-open inclusion).
+An annual coupon ending 2024-02-29 includes that leap day; a coupon
+starting on 2024-02-29 excludes it from the annual denominator test.
+The context-free legacy function returns NaN instead of guessing annual
+frequency. The Python oracle executes pinned FinancePy 1.1.2
+`DayCount(ACT_365L).year_frac` with coupon-end and frequency information and
+compares the resulting annual/nonannual fractions with Rust.
 
-### Governing standard
+### Governing references
 
-ICMA Rule 251 and the sterling money-market convention literature on the
-*Actual/365L* leap-aware day count.
+ICMA Rule 251.1(i), part 2, as clarified; the pinned
+[FinancePy reference implementation](https://github.com/domokane/FinancePy/blob/80b1e8c5dad16788393f788f6b9aa67019823138/financepy/utils/day_count.py).
+QuantLib has no directly equivalent Act/365L day counter.
 
 ---
 
 ## NL/365 — conventional — `src/day_count/nl_365.rs`
 
-NL/365 — "No-Leap / 365" — is a money-market variant of Act/365F that
-excludes 29 February from the numerator: the fraction's numerator is the
-actual count of calendar days between `start` and `end`, *minus* the
-number of 29 February dates that fall in the half-open interval `[start,
-end)`; the denominator is the fixed constant 365. The effect is that a
-full leap-year span and a full non-leap-year span both return exactly
-`1.0` — the convention is "leap-year-blind" by construction, in the same
-way Act/360 is leap-year-blind by virtue of a constant 360 denominator,
-but here every year contributes exactly `365/365` to the fraction.
-
-The convention has no entry in the ISDA 2006 Definitions §4.16 catalogue;
-it is a market-practice convention found principally in some legacy
-money-market and fixed-income contracts.
+NL/365 removes February 29 dates in `(start, end]` from the actual day
+count, then divides by 365. This matches QuantLib
+`Actual365Fixed::NoLeap`.
 
 ### Structure
 
 ```text
-numerator   = days_between(start, end) - leap_days_in_interval(start, end)
-denominator = 365
-f           = numerator / 365.0
-
-leap_days_in_interval(lo, hi) = count of ymd(y, 2, 29) for leap year y
-                                satisfying lo <= ymd(y, 2, 29) < hi
+forward numerator = days_between(start, end)
+                    - count(February 29 where start < leap_day <= end)
+fraction = numerator / 365
+reverse fraction = -forward fraction
 ```
 
-For an inverted interval (`start > end`) the leap-day count is taken over
-the forward half-open interval and the sign is carried by the signed
-`days_between`, preserving `fraction(end, start) == -fraction(start,
-end)`.
-
-### Worked example — full leap year is exactly 1.0
+### Boundary examples
 
 ```text
-start = 2024-01-01, end = 2025-01-01
-days  = 366 (2024 is a leap year)
-2024-02-29 ∈ [start, end) → subtract 1
-num   = 365
-f     = 365 / 365 = 1.0
+2024-02-28 -> 2024-02-29: (1 actual day - 1 leap day) / 365 = 0
+2024-02-29 -> 2024-03-01: (1 actual day - 0 leap days) / 365 = 1/365
+2024-01-01 -> 2025-01-01: (366 - 1) / 365 = 1
 ```
 
-Asserted in `tests/integration.rs::cross_oracle::
-hand_nl_365_full_leap_year_is_one`. The same module also pins
-`hand_nl_365_eight_year_span_two_leaps` (2020-01-01 → 2028-01-01 =
-`2920/365 = 8.0` exactly, covering the 2020 and 2024 leap days) and
-`hand_nl_365_q1_non_leap` (90/365 for a non-leap-year first quarter).
+The committed QuantLib fixtures exercise leap-day boundaries, reverse
+intervals and longer spans with an independently executed implementation.
 
-### Governing standard
+### Governing references
 
-Market-convention day-count catalogues that list NL/365 alongside the
-ISDA / ICMA fractions — the convention is non-statutory; no single
-primary reference applies.
+The pinned QuantLib NoLeap implementation recorded under `validation/`.
 
 ---
 
@@ -807,8 +767,9 @@ For start > end:
     return -fraction(end, start, is_business_day)
 ```
 
-The walk is one day at a time, bounded defensively at `MAX_DAYS = 73_000`
-steps (~200 years) so a pathological predicate cannot loop indefinitely.
+The predicate-based fraction walks every date in the finite interval; it
+does not truncate a long interval. The checked calendar wrapper additionally
+validates calendar coverage and reports any walk limit as an error.
 
 ### Worked example — two weeks under TARGET2
 
@@ -1102,54 +1063,27 @@ alongside the four ISDA conventions.
 
 ## EndOfMonth date roll — `src/roll.rs`
 
-`Roll::EndOfMonth` anchors every monthly roll-forward that started on the
-last business day of a month to the last business day of the new month it
-lands on. In ISDA wording: "if the date is the last business day of its
-month, every rolled coupon date is also the last business day of its
-month".
-
-### Structure
+This is a standalone date adjustment: an existing business day is preserved;
+a non-business day is adjusted with ModifiedFollowing. The implementation
+therefore has the same single-date output as ModifiedFollowing, including
+preserving the last business day of a month.
 
 ```text
-apply(date, EndOfMonth, is_biz):
-    if is_last_business_day_of_month(date, is_biz):
-        return last_business_day_of_month(date, is_biz)
-    else:
-        return ModifiedFollowing(date, is_biz)
+apply(date, EndOfMonth, is_biz) = ModifiedFollowing(date, is_biz)
 ```
 
-`is_last_business_day_of_month` walks forward from `date` to the end of
-its calendar month and reports `true` iff no later business day exists.
-`last_business_day_of_month` walks backward from the calendar last-day to
-find the latest business day inside the month. When `date` is not itself
-the last business day of its month, the roll falls through to
-`ModifiedFollowing` so the day-of-month behaviour is unsurprising.
+The independent reference is QuantLib's
+`Calendar.advance(date, 0, Months, ModifiedFollowing, endOfMonth=true)`,
+which applies the same standalone adjustment. This API receives one date;
+propagating a schedule's original end-of-month anchor requires that origin
+context. `Date::add_months_eom_aware` separately performs calendar-day
+clamping, such as 31 January plus one month becoming 28/29 February.
 
-The intended usage is "EOM-aware schedule generation": pair this roll
-with `Date::add_months_eom_aware` to roll a coupon period that started at
-month-end forward by a fixed number of months and land again at the
-month-end.
+### Worked example
 
-### Worked example — last Friday of a month under TARGET2
-
-```text
-2026-05-29 (Fri) is the last business day of May 2026 under TARGET2.
-apply(2026-05-29, EndOfMonth, is_business_day(_, Target2)) = 2026-05-29.
-
-2026-05-31 (Sun) is NOT the last business day of May (the predicate
-returns false on Sunday). EndOfMonth falls through to ModifiedFollowing,
-which lands back on the last business day Fri 2026-05-29.
-```
-
-Both branches are asserted in `src/roll.rs::end_of_month_*` and in
-`tests/integration.rs::cross_module` (indirectly, via the TARGET2
-adjustment helpers).
-
-### Governing standard
-
-ISDA 2006 Definitions §4.12 (*Business Day Convention*) — the "EOM"
-qualifier on a Business Day Convention, paired with the "End of Month"
-schedule-rolling rule.
+Under TARGET2, 29 May 2026 is already a business day and stays unchanged.
+31 May 2026 is Sunday; following would cross into June, so the adjusted
+result is Friday 29 May. Both inputs are covered by reference comparisons.
 
 ---
 
@@ -1162,8 +1096,9 @@ EUR-denominated cashflow this crate processes. Unlike the six dated-
 snapshot calendars catalogued below, TARGET2 is **fully rule-based**: the
 European Central Bank fixes exactly six closing dates per year, derivable
 from the year alone, and that schedule has not changed since TARGET2 went
-live in 2008. No dated table is stored — the rule is exact for every year
-in the supported `Date` range.
+live in 2008. No dated table is stored. The checked rule domain begins in
+2002, when this six-day TARGET schedule took effect; extrapolating it to
+earlier historical years is unsupported.
 
 ### Structure
 
@@ -1218,160 +1153,80 @@ Willmann-Bell, 1998, §8.
 
 ## Luxembourg calendar — Loi du 21 juillet 1928 — `src/calendar/luxembourg.rs`
 
-Luxembourg's bank-holiday calendar is the schedule under which Luxembourg
-banks, the Banque centrale du Luxembourg, and the BCEE close, and which
-every Luxembourg-domiciled UCITS or SIF fund uses (typically composited
-with TARGET2 via `JointBusiness`) to determine NAV-publication dates.
-Like TARGET2 it is **fully rule-based** — every date is either a fixed
-civil date or an Easter-derived date that `Date::easter_sunday` already
-gives us, so no snapshot table is stored and the calendar is exact for
-every year in the supported `Date` range.
-
-The list differs from TARGET2 in five entries: Luxembourg observes
-Whit Monday (TARGET2 dropped it in 2002), Ascension Day, Europe Day (from
-2019), Luxembourg National Day, the Assumption of Mary, and All Saints'
-Day; it does NOT observe Good Friday (which is a religious observance but
-not a gazetted Luxembourg bank holiday). The Luxembourg-specific dates
-add five extra closures per year relative to TARGET2 — the gap a UCITS /
-SIF NAV calendar fills via composition.
+This is the Luxembourg **bank-holiday** calendar. It includes the legal
+public holidays and Good Friday, an additional banking closure. Christmas
+Eve's afternoon closure is not a full-day holiday in this date-only model.
+A fund's NAV-publication policy may combine this calendar with TARGET2;
+that policy is a caller choice.
 
 ### Structure
 
-```text
-Eleven holidays per year:
-
-  1.  1 January       (New Year's Day)              fixed
-  2.  Easter Monday   = Easter Sunday + 1 day       Easter-derived
-  3.  1 May           (Labour Day)                  fixed
-  4.  9 May           (Europe Day)                  fixed (from 2019 onwards)
-  5.  Ascension Day   = Easter Sunday + 39 days     Easter-derived
-  6.  Whit Monday     = Easter Sunday + 50 days     Easter-derived
-  7. 23 June          (National Day)                fixed
-  8. 15 August        (Assumption of Mary)          fixed
-  9.  1 November      (All Saints' Day)             fixed
- 10. 25 December      (Christmas Day)               fixed
- 11. 26 December      (Boxing Day / St. Stephen)    fixed
-```
-
-No weekend-observance shift — like TARGET2, the function reports the
-**rule date** in every year. A holiday that falls on a Sunday is reported
-on the Sunday; the weekend filter is handled separately by
-`is_business_day`.
+Fixed dates: 1 January, 1 May, 9 May (from 2019), 23 June, 15 August,
+1 November, 25 December and 26 December. Easter-relative dates: Good
+Friday (Easter − 2), Easter Monday (+1), Ascension (+39), Whit Monday
+(+50). No weekend shift. Duplicate dates, such as Ascension and Europe
+Day in 2024, represent one closure.
 
 ### Worked example — 2026
 
-```text
-Easter Sunday 2026 = 5 April  (computed by Date::easter_sunday)
+Good Friday is 3 April 2026 and is not a banking business day. Ascension
+is 14 May 2026. Christmas Eve, 24 December 2026, is a business day at this
+calendar's whole-day resolution.
 
-  2026-01-01  Thu   New Year's Day
-  2026-04-06  Mon   Easter Monday   (Easter + 1)
-  2026-05-01  Fri   Labour Day
-  2026-05-09  Sat   Europe Day
-  2026-05-14  Thu   Ascension Day   (Easter + 39)
-  2026-05-25  Mon   Whit Monday     (Easter + 50)
-  2026-06-23  Tue   National Day
-  2026-08-15  Sat   Assumption
-  2026-11-01  Sun   All Saints'
-  2026-12-25  Fri   Christmas Day
-  2026-12-26  Sat   Boxing Day
-```
+### Governing references
 
-Asserted in `src/calendar/luxembourg.rs::tests::holidays_2026`.
-
-### Europe Day (the 2019 cutover)
-
-Europe Day (the anniversary of the Schuman Declaration, 9 May 1950) was
-added to the Luxembourg public-holiday list by the **Loi du 28 février
-2019 fixant les jours fériés légaux**, with first observance in 2019.
-The implementation guards this exactly:
-
-```text
-europe_day = (date == ymd(year, 5, 9)) && year >= 2019
-```
-
-so `is_holiday(2018-05-09)` returns `false` and `is_holiday(2019-05-09)`
-returns `true`. The cutover is asserted in
-`src/calendar/luxembourg.rs::tests::europe_day_added_in_2019`.
-
-### Composition with TARGET2
-
-The canonical Luxembourg-fund NAV calendar is
-
-```rust
-use regit_daycount::{Calendar, calendar::JointBusiness};
-
-static LU_FUND: &[Calendar] = &[Calendar::Target2, Calendar::Luxembourg];
-let nav = JointBusiness::new(LU_FUND);
-```
-
-which closes on any date either TARGET2 or Luxembourg considers
-non-business — the broadest correct schedule for a SICAV.
-
-### Governing standards
-
-Loi du 21 juillet 1928 sur le droit du travail (Luxembourg), as amended;
-Loi du 28 février 2019 fixant les jours fériés légaux (the law that added
-Europe Day). Easter is the Anonymous Gregorian / Meeus Computus shared
-with TARGET2.
+Luxembourg government's published public and bank holidays and bank
+operating calendars. Legal-public-holiday rules alone do not define the
+bank calendar. Checked verified years are exposed by `calendar::coverage`;
+a modern rule is not certification of bank operations back to 1583.
 
 ---
 
 ## United States calendar — NYSE / Federal Reserve — `src/calendar/united_states.rs`
 
-The US calendar is an embedded, dated snapshot of the holidays observed
-by the New York Stock Exchange and the US Federal Reserve. The NYSE
-schedule is a superset of the Federal Reserve operating-day list (the
-NYSE adds Good Friday); this module models the NYSE list, which is the
-conservative — and standard — choice for US bond and equity settlement
-dates.
+The two named calendars represent different markets:
+
+| Variant | Good Friday | Columbus / Veterans Day | Saturday fixed holiday |
+|---|---|---|---|
+| `UnitedStatesNyse` | Closed | Open | Usually Friday; New Year's Day has an exception |
+| `UnitedStatesFederalReserve` | Open | Closed | No preceding Friday closure |
+
+`UnitedStates` remains an alias for NYSE. The Federal Reserve variant is
+implemented separately in `src/calendar/united_states.rs`.
 
 ### Structure
 
-```text
-Snapshot date: SNAPSHOT_DATE = "2026-05-23"
-Coverage:      COVERAGE      = (2020, 2040) inclusive
-Entries:       208 observed holiday dates (10 holidays × 21 years − 2
-               edge gaps for Juneteenth before 2022)
-```
+NYSE embeds a sorted 2020–2040 table. Its rules include MLK Day (third
+Monday in January), Washington's Birthday (third Monday in February),
+Good Friday, Memorial Day (last Monday in May), Juneteenth (from 2022),
+Independence Day, Labor Day (first Monday in September), Thanksgiving
+(fourth Thursday in November), Christmas and New Year's Day. Sunday fixed
+holidays roll to Monday. For Saturday New Year's Day the preceding
+Friday remains open. Other Saturday fixed holidays normally close Friday.
+The table also includes the 9 January 2025 Carter funeral closure.
 
-The ten observed holidays follow these rules (the *observed* date for a
-fixed-date holiday falling on a weekend is shifted per the published
-schedule; the snapshot records the observed date, not the rule date):
+The Federal Reserve operating calendar closes for its eleven federal
+holidays, including Columbus and Veterans Day and operating-day
+Juneteenth observance from 2022 (the 2021 date fell on Saturday).
+Saturday holidays do not close the preceding Friday; Sunday holidays close
+Monday. Its checked supported horizon is separate from historical rules.
 
-```text
-New Year's Day        Jan 1   (observed Fri ← Sat, Mon → Sun)
-MLK Day               3rd Monday of January
-Presidents' Day       3rd Monday of February
-Good Friday           Easter Sunday − 2 days
-Memorial Day          last Monday of May
-Juneteenth (from 2022) Jun 19 (observed Mon → Sun, Fri ← Sat); NYSE since 2022
-Independence Day      Jul 4   (observed Fri ← Sat, Mon → Sun)
-Labor Day             1st Monday of September
-Thanksgiving          4th Thursday of November
-Christmas Day         Dec 25  (observed Fri ← Sat, Mon → Sun)
-```
-
-The 208-entry table is a sorted `&'static [(year, month, day)]` array in
-the source file; it is not reproduced inline here. Lookups outside
-`COVERAGE` return `false` — never a panic, never an extrapolation.
-
-### Worked example
+### Boundary examples
 
 ```text
-is_holiday(2024-07-04, UnitedStates) = true   // Independence Day (Thu)
-is_holiday(2024-11-28, UnitedStates) = true   // Thanksgiving Day (4th Thu)
+NYSE 2027-12-31 = business day (2028-01-01 is Saturday)
+NYSE 2025-01-09 = non-business day (Carter funeral)
+NYSE 2026-04-03 = closed; Federal Reserve = open (Good Friday)
+NYSE 2026-10-12 = open; Federal Reserve = closed (Columbus Day)
 ```
 
-Asserted in `tests/integration.rs::golden::us_known_holidays`. The
-out-of-coverage behaviour is asserted in
-`tests/integration.rs::invalid::out_of_coverage_calendar_returns_false_not_panic`
-(`is_holiday(2019-12-25, UnitedStates) = false`).
+### Governing references
 
-### Governing standards
-
-NYSE Holiday Calendar, the published trading-floor schedule. Federal
-Reserve Bank Services holiday schedule. SEC / NYSE notices for
-discretionary closures (hurricanes, state funerals).
+[NYSE holiday calendar](https://www.nyse.com/trade/hours-calendars), NYSE
+notices for exceptional closures, and the
+[Federal Reserve operating holiday schedule](https://www.federalreserve.gov/aboutthefed/k8.htm).
+Primary-source verified years and wider projections are distinct in
+`calendar::coverage`; checked functions reject unknown coverage by default.
 
 ---
 
@@ -1469,107 +1324,61 @@ Exchange Group, *Trading Calendar of the Tokyo Stock Exchange*.
 
 ## Switzerland calendar — SIX — `src/calendar/switzerland.rs`
 
-The Switzerland calendar is an embedded, dated snapshot of the SIX Swiss
-Exchange trading calendar — combining the Swiss federal holidays
-(Neujahrstag, Bundesfeier on 1 August) with the cantonal holidays the
-exchange observes (Berchtoldstag on 2 January, Auffahrt = Ascension Day
-on Easter + 39, Pfingstmontag = Whit Monday on Easter + 50).
+This is the SIX trading calendar. It includes Christmas Eve and New Year's
+Eve full-day closures, which are absent from Swiss banking settlement
+calendars. The other named observances are New Year, Berchtoldstag, Good
+Friday, Easter Monday, Labour Day, Ascension, Whit Monday, National Day,
+Christmas and St Stephen's Day. The table records observed weekday trading
+closures and omits weekend-only nominal dates; no substitute weekday is
+created for those dates.
 
-### Structure
+Snapshot: 23 October 2026. Available years: 2020–2040. The entire date window
+is compared against `holidays==0.107` XSWX. QuantLib Switzerland is a
+banking calendar and cannot substitute for this market reference.
+For example, 24 and 31 December 2026 are closed on SIX.
 
-```text
-Snapshot date: SNAPSHOT_DATE = "2026-05-23"
-Coverage:      COVERAGE      = (2020, 2040) inclusive
-Entries:       210 (10 holidays × 21 years; no extraordinary closures)
-```
-
-The ten observed holidays per year are: Neujahrstag (Jan 1), Berchtoldstag
-(Jan 2), Karfreitag (Easter − 2), Ostermontag (Easter + 1), Tag der Arbeit
-(May 1), Auffahrt (Easter + 39), Pfingstmontag (Easter + 50), Bundesfeier
-(Aug 1), Weihnachten (Dec 25), Stephanstag (Dec 26).
-
-The table lives in the source file; it is not reproduced inline.
-
-### Worked example
-
-```text
-is_holiday(2024-08-01, Switzerland) = true   // Bundesfeier
-```
-
-Asserted in `src/calendar/mod.rs::dispatches_to_every_named_calendar`.
-
-### Governing standards
-
-SIX Swiss Exchange, *Trading calendar*. Federal Constitution of the
-Swiss Confederation, Art. 110 (1 August National Day).
+Primary source: SIX's trading calendar. Exact source hashes and independent
+market mappings appear in `validation/oracle.json`.
 
 ---
 
 ## Hong Kong calendar — HKEX — `src/calendar/hong_kong.rs`
 
-The Hong Kong calendar is an embedded, dated snapshot of the Hong Kong
-Exchanges and Clearing trading calendar. The HKEX schedule combines the
-Western fixed-date holidays (Western New Year, Christmas, Boxing Day)
-with several **lunar / Chinese-calendar holidays** — Lunar New Year (3
-days), Ching Ming Festival, Buddha's Birthday, Tuen Ng (Dragon Boat),
-Mid-Autumn Festival, Chung Yeung Festival — none of which have a closed-
-form Gregorian rule and which therefore force the snapshot form.
+This is the HKEX full-day trading calendar. Observed weekday closures
+include Western, lunar and Chinese public holidays and retained exceptional
+full-day severe-weather cancellations. Partial sessions remain business
+days; weekend-only nominal public holidays are omitted from the named
+closure set.
 
-### Structure
+Snapshot: 23 October 2026. Available years: 2020–2040. The entire date window
+is compared against `holidays==0.107` XHKG. QuantLib 1.44's truncated lunar
+holiday tables cannot validate later years by treating missing rows as open.
+The snapshot retains actual weather closures on 13 October 2020,
+13 October 2021, 17 July 2023, 1 and 8 September 2023, and 6 September 2024.
 
-```text
-Snapshot date: SNAPSHOT_DATE = "2026-05-23"
-Coverage:      COVERAGE      = (2020, 2040) inclusive
-```
-
-The table lives in the source file; it is not reproduced inline.
-
-### Worked example
-
-```text
-is_holiday(2024-12-25, HongKong) = true   // Christmas (Western fixed)
-```
-
-Asserted in `src/calendar/mod.rs::dispatches_to_every_named_calendar`.
-
-### Governing standards
-
-Hong Kong Exchanges and Clearing Limited, *HKEX Trading Calendar*. Hong
-Kong Government Gazette, *General Holidays Ordinance* (Cap. 149).
+Primary source: HKEX trading calendars and closure announcements. Future
+unpublished years remain explicit projections. Independent sources, hashes
+and complete daily comparisons are recorded in `validation/oracle.json`.
 
 ---
 
 ## Singapore calendar — SGX — `src/calendar/singapore.rs`
 
-The Singapore calendar is an embedded, dated snapshot of the Singapore
-Exchange trading calendar. The SGX schedule combines the Western fixed-
-date holidays with the multi-faith Singaporean public holidays — Chinese
-New Year (lunar), Vesak Day (Buddhist), Hari Raya Puasa and Hari Raya
-Haji (Islamic), Deepavali (Hindu / lunar) — and applies the §4 Holidays
-Act 1998 Monday-in-lieu rule for fixed-date holidays falling on a Sunday.
+This is the SGX full-day public-holiday trading calendar. It combines fixed,
+Chinese lunar, Buddhist, Islamic and Hindu holidays, plus polling-day public
+holidays. Saturday nominal dates remain in the named set; Sunday nominal
+dates are replaced by their observed weekday. Partial sessions stay open.
 
-### Structure
+Snapshot: 23 October 2026. Available years: 2020–2040. Every named-holiday
+and business-day classification is compared against `holidays==0.107`
+Singapore PUBLIC and the independent XSES financial calendar. The snapshot
+includes polling days 10 July 2020, 1 September 2023 and 3 May 2025.
+Hari Raya Puasa 2026 is Saturday 21 March; Friday 20 March is open.
 
-```text
-Snapshot date: SNAPSHOT_DATE = "2026-05-23"
-Coverage:      COVERAGE      = (2020, 2040) inclusive
-```
-
-The table lives in the source file; it is not reproduced inline.
-
-### Worked example
-
-```text
-is_holiday(2024-08-09, Singapore) = true   // National Day
-```
-
-Asserted in `src/calendar/mod.rs::dispatches_to_every_named_calendar`.
-
-### Governing standards
-
-Singapore Ministry of Manpower, *Public Holidays in Singapore*. Singapore
-Exchange (SGX), *SGX Securities and Derivatives Trading Calendar*.
-Holidays Act 1998 (Singapore), §4 (Monday-in-lieu rule).
+Primary sources: MOM's annual public-holiday lists, SGX trading calendars
+and the Holidays Act. Published-date verification and estimated future
+religious/lunar dates remain separate in checked coverage metadata. The
+oracle retains source hashes and projection assumptions in its manifest.
 
 ---
 
@@ -1625,7 +1434,7 @@ cap is reached, the partial result is returned.
 ### `business_days_between(start, end, cal)`
 
 Counts business days in `[start, end)` (start-inclusive, end-exclusive
-— the same half-open convention used everywhere in this crate). For
+— the actual-day interval convention). For
 `start >= end` the count is `0`; the function does not return signed
 counts. Walk is one calendar day at a time, defensively bounded at
 ~200 years.
@@ -1645,7 +1454,7 @@ and the matching `bus_252_for_calendar_matches_manual_count` test.
 ISDA 2006 Definitions §4.12 (business-day conventions) for the roll
 fall-through to [`crate::roll::apply`]. The T+N settlement form is
 market convention; the half-open `[start, end)` interval is consistent
-with the day-count fractions in §3.
+with actual-day counts in §3; leap-day adjustments have their own endpoint rules.
 
 ---
 
@@ -1681,7 +1490,7 @@ Composite { kinds: &'static [Calendar] }
 
 JointBusiness { kinds: &'static [Calendar] }
     is_business_day(d) = all(is_business_day(d, k) for k in kinds)
-    is_holiday(d)      = !is_business_day(d) && !is_weekend(d)
+    is_holiday(d)      = any(is_holiday(d, k) for k in kinds)
 ```
 
 `is_business_day` on both types is the intersection — it is `false` if

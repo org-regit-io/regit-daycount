@@ -18,10 +18,8 @@
 //! period sits inside (or coincides with) one reference coupon period. The
 //! standard further prescribes a split-into-regular-sub-periods procedure
 //! for irregular (long / short) first or last coupons; that variant is
-//! deliberately out of scope here and will be added in a future revision as
-//! a separate `act_act_icma_irregular` function. Callers handling an
-//! irregular calculation period must either pre-decompose or wait for that
-//! addition.
+//! outside this module's scope. Callers must decompose accruals spanning
+//! multiple reference periods into contained subperiods.
 //!
 //! # Algorithm
 //!
@@ -31,19 +29,15 @@
 //! ```
 //!
 //! Where `days_between` is the signed count of days from the first argument
-//! to the second, end-exclusive, start-inclusive (the convention shared by
-//! every fraction in this crate). `freq` is the integer coupon frequency:
+//! to the second. `freq` is the integer coupon frequency:
 //! 1 (annual), 2 (semi-annual), 4 (quarterly), 12 (monthly).
 //!
-//! # Defensive behaviour
+//! # Invalid input
 //!
-//! If the caller passes `freq == 0` or a degenerate reference period for
-//! which `days_between(ref_start, ref_end) == 0`, the function returns
-//! `0.0`. Both are precondition violations by the caller — a coupon
-//! frequency of zero is not a thing, and a zero-length reference period
-//! cannot be a coupon period — but returning `0.0` is preferable to
-//! emitting a silent `NaN` that would propagate through downstream cashflow
-//! arithmetic undetected.
+//! [`try_fraction`] rejects zero frequency, empty or inverted reference
+//! periods, and accrual endpoints outside the single reference period.
+//! The legacy [`fraction`] entry point returns `NaN` for those errors.
+//! Reverse accruals use an ordered reference period and a signed numerator.
 //!
 //! # Worked example — full semi-annual period
 //!
@@ -83,10 +77,8 @@ use crate::date::Date;
 /// - `freq`: coupon frequency — `1` (annual), `2` (semi-annual), `4`
 ///   (quarterly), `12` (monthly).
 ///
-/// Returns `0.0` defensively if `freq == 0` or if `ref_start == ref_end`
-/// (a degenerate reference period). Both are caller-side precondition
-/// violations; the alternative is a silent `NaN` propagating through
-/// downstream arithmetic.
+/// Returns `NaN` for invalid coupon context; use [`try_fraction`] to
+/// distinguish the validation errors.
 ///
 /// # Examples
 ///
@@ -105,15 +97,37 @@ use crate::date::Date;
 /// ```
 #[must_use]
 pub fn fraction(start: Date, end: Date, ref_start: Date, ref_end: Date, freq: u8) -> f64 {
-    if freq == 0 {
-        return 0.0;
+    try_fraction(start, end, ref_start, ref_end, freq).unwrap_or(f64::NAN)
+}
+
+/// Computes Act/Act ICMA for an accrual contained in one reference period.
+///
+/// Reversed accrual endpoints are supported with the same ordered reference
+/// period. Irregular schedules spanning multiple reference periods must be
+/// decomposed by the caller.
+///
+/// # Errors
+///
+/// Returns [`super::DayCountError::ZeroFrequency`] for zero frequency,
+/// [`super::DayCountError::InvalidReferencePeriod`] for an empty or inverted
+/// reference period, or [`super::DayCountError::AccrualOutsideReferencePeriod`]
+/// if either accrual endpoint falls outside it.
+pub fn try_fraction(
+    start: Date,
+    end: Date,
+    ref_start: Date,
+    ref_end: Date,
+    freq: u8,
+) -> Result<f64, super::DayCountError> {
+    super::CouponPeriod {
+        start: ref_start,
+        end: ref_end,
+        frequency: freq,
     }
+    .validate(start, end)?;
     let ref_days = ref_start.days_between(ref_end);
-    if ref_days == 0 {
-        return 0.0;
-    }
     let calc_days = start.days_between(end);
-    f64::from(calc_days) / (f64::from(freq) * f64::from(ref_days))
+    Ok(f64::from(calc_days) / (f64::from(freq) * f64::from(ref_days)))
 }
 
 #[cfg(test)]
@@ -205,27 +219,21 @@ mod tests {
     // ─── Defensive: zero frequency ───────────────────────────────────────
 
     #[test]
-    fn icma_zero_freq_returns_zero() {
-        // `freq == 0` is a caller-side precondition violation; the
-        // function returns 0.0 rather than emitting a silent NaN that
-        // would propagate through downstream cashflow arithmetic.
+    fn icma_zero_freq_returns_nan() {
         let start = Date::ymd(2026, 3, 1).unwrap();
         let end = Date::ymd(2026, 9, 1).unwrap();
         let f = fraction(start, end, start, end, 0);
-        assert!(f.abs() < TOL);
+        assert!(f.is_nan());
     }
 
     // ─── Defensive: degenerate reference period ──────────────────────────
 
     #[test]
-    fn icma_zero_ref_period_returns_zero() {
-        // `ref_start == ref_end` makes the denominator zero. Same
-        // precondition-violation policy as `freq == 0`: return 0.0 rather
-        // than NaN.
+    fn icma_zero_ref_period_returns_nan() {
         let start = Date::ymd(2026, 3, 1).unwrap();
         let end = Date::ymd(2026, 9, 1).unwrap();
         let ref_pt = Date::ymd(2026, 3, 1).unwrap();
         let f = fraction(start, end, ref_pt, ref_pt, 2);
-        assert!(f.abs() < TOL);
+        assert!(f.is_nan());
     }
 }

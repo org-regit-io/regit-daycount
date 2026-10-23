@@ -74,26 +74,16 @@
 //! - Banking and Financial Dealings Act 1971 (c. 80), Schedule 1 — the
 //!   statutory schedule of bank holidays in England and Wales.
 //!
-//! # Verification
+//! # Verification status
 //!
-//! Every row in [`HOLIDAYS`] was cross-checked on `2026-05-23` against:
+//! No complete primary-source annual audit has been retained for this
+//! table. Earlier prose asserted broader verification than its evidence
+//! established. Rule-derived regression tests check internal consistency;
+//! they do not establish market agreement. All available years currently
+//! require [`super::CoveragePolicy::AllowProjected`] in the checked APIs.
+//! Consult [`super::coverage`] for machine-readable horizons and refresh
+//! annual schedules from the primary sources before operational use.
 //!
-//! 1. HM Government, *UK bank holidays* — <https://www.gov.uk/bank-holidays>
-//!    (the canonical England-and-Wales schedule the Bank of England, the
-//!    London Stock Exchange and the GBP money / FX markets close on).
-//! 2. The Banking and Financial Dealings Act 1971 (Schedule 1) for the
-//!    structural rules.
-//! 3. Rule-derivation against the Western (Gregorian) Easter computus, the
-//!    `nth Monday of month` calendar arithmetic, and the published royal
-//!    proclamations for the four dated specials (2020-05-08 VE Day 75th;
-//!    2022-06-02 / 06-03 Platinum Jubilee; 2022-09-19 State Funeral of
-//!    Queen Elizabeth II; 2023-05-08 Coronation of King Charles III).
-//!
-//! Years past the gov.uk publication horizon (which typically lists the
-//! current and next ~two years only) are rule-derived; the `tests` module
-//! below contains a `derivation_matches_table` test that re-derives every
-//! structural row from rules and asserts the table matches, so any future
-//! hand-edit that drifts from the rule is caught at build time.
 
 use crate::date::Date;
 
