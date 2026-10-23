@@ -13,7 +13,7 @@ include-dev = true
 # The published crate has zero runtime dependencies, so the licence graph of
 # the shipped artefact is the crate itself (Apache-2.0). The remaining entries
 # cover the permissive licences in the *development* dependency tree
-# (`proptest`, `criterion`) — none copyleft, none shipped to users. cargo-deny
+# (`proptest`) — none copyleft, none linked into consumer builds. cargo-deny
 # will flag the licence of the first runtime dependency ever added.
 allow = [
     "Apache-2.0",

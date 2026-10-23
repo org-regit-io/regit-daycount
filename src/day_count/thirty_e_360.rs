@@ -8,8 +8,10 @@
 //! convention: every month is treated as having exactly 30 days and every
 //! year as having exactly 360, with a small set of end-of-month adjustments
 //! applied to the raw `(year, month, day)` triples before the arithmetic.
-//! The result is a clean, semi-annual coupon period that always lands on
-//! 0.5 regardless of the actual day count.
+//! A six-month period with matching adjusted day-of-month values has fraction
+//! `0.5`, independently of its actual day count. February-end dates are not
+//! adjusted unless their day is 31, so that rule does not cover every
+//! end-of-month coupon schedule.
 //!
 //! # Difference from 30/360 Bond Basis (ISDA §4.16(f))
 //!
@@ -61,7 +63,7 @@ use crate::date::Date;
 ///
 /// See the module-level docstring for the algorithm, the `BondBasis`
 /// difference, and the worked example. The result is signed — inverted
-/// intervals (`end < start`) yield a negative fraction by construction —
+/// intervals (`end < start`) yield a nonpositive fraction by construction —
 /// because the crate does not reject reverse-period accruals.
 ///
 /// # Examples
@@ -103,12 +105,7 @@ pub fn fraction(start: Date, end: Date) -> f64 {
 mod tests {
     use super::*;
 
-    // The tolerance 1e-12 is the working slack used throughout this crate's
-    // numeric assertions: it is loose enough that a benign last-bit rounding
-    // never causes a spurious failure, and tight enough that any drift large
-    // enough to mis-state a cashflow at the cent level (≥ 1e-9 on a unit
-    // notional) is caught immediately. We deliberately do not assert against
-    // `f64::EPSILON`; the goal is auditable, not maximally-tight.
+    // Absolute year-fraction tolerance for these worked examples.
     const TOL: f64 = 1e-12;
 
     // ─── No-adjustment baseline ──────────────────────────────────────────
@@ -200,11 +197,8 @@ mod tests {
 
     #[test]
     fn eurobond_inverted_negative() {
-        // The crate does not reject `end < start`; with the unconditional
-        // D2 rule the forward / backward fractions are not strictly
-        // negatives of each other when one endpoint has day 31 (because
-        // the D1 / D2 rewrites apply asymmetrically). Use mid-month
-        // endpoints where no rewrite fires, so the relation is exact.
+        // The same day-of-month adjustment applies to both endpoints,
+        // so exchanging the endpoints negates the fraction.
         //   start = 2026-01-15, end = 2026-07-15
         //   forward  =  180 / 360 =  0.5
         //   backward = -180 / 360 = -0.5

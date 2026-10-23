@@ -1,47 +1,44 @@
 // Copyright 2026 Regit.io — Nicolas Koenig
 // SPDX-License-Identifier: Apache-2.0
 
-//! Hong Kong — HKEX full-day trading closures.
+//! HKEX securities-market full-day trading closures.
 //!
-//! The 2020–2040 table includes observed weekday exchange holidays and
-//! announced full-day severe-weather cancellations. Half-day sessions
-//! remain business days. Weekend-only nominal public holidays are omitted
-//! from this named trading-closure list; the weekend filter still closes
-//! every Saturday and Sunday.
+//! Partial sessions remain business days; settlement can be closed on those
+//! days, so this is not an HKEX settlement calendar. Weekends are excluded
+//! separately. Historical rows include retained full-day weather cancellations.
+//! Complete official securities schedules were checked on 2026-10-23:
+//! - 2026, CT/075/25: <https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2025/ce_SEHK_CT_075_2025.pdf>.
+//! - 2027, CT/077/26: <https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2026/ce_SEHK_CT_077_2026.pdf>.
 //!
-//! Full-day weather closures retained in this snapshot are 2020-10-13,
-//! 2021-10-13, 2023-07-17, 2023-09-01, 2023-09-08 and 2024-09-06.
-//! The HKEX announcements are linked by the independent financial reference:
-//! <https://github.com/vacanza/holidays/blob/v0.107/holidays/financial/hong_kong_stock_exchange.py>.
-//! The table was independently compared across every 2020–2040 date on
-//! 2026-10-23. Future lunar-date calculations and unchanged-rule assumptions
-//! remain projections; they are not an official published schedule.
-//!
-//! `QuantLib` 1.44's lunar holiday tables stop at 2026, so its later default
-//! weekdays are not a complete reference. The independent Python oracle
-//! executes the pinned `holidays==0.107` XHKG financial implementation with
-//! full calendar calculations and explicit available-year checks instead.
-//! Source hashes and mappings are retained in `validation/oracle.json`.
-//!
-//! Official exchange information:
-//! <https://www.hkex.com.hk/Services/Trading-hours-and-Severe-Weather-Arrangements/Trading-Hours/Securities-Market>.
+//! Other available years are unaudited historical rows or projections.
 
 use crate::date::Date;
+
+/// Complete primary-source verified annual horizon (inclusive).
+pub const VERIFIED_YEARS: (i32, i32) = (2026, 2027);
+/// Date the primary annual schedules were checked.
+pub const VERIFIED_ON: &str = "2026-10-23";
+
+/// Query a named holiday with verified market coverage.
+///
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::HongKong)
+}
 
 /// Date of the HKEX trading-calendar snapshot embedded in this module,
 /// `YYYY-MM-DD`.
 pub const SNAPSHOT_DATE: &str = "2026-10-23";
 
-/// Closed interval `(first_year, last_year)` of full-year coverage
-/// guaranteed by [`HOLIDAYS`]. Dates outside this window return `false`
-/// from [`is_holiday`].
+/// Inclusive available year range. Checked queries reject dates outside it.
 pub const COVERAGE: (i32, i32) = (2020, 2040);
 
 /// Observed weekday full-day HKEX trading closures for 2020–2040,
 /// sorted for binary search. Includes retained exceptional closures;
 /// weekends and partial sessions are not additional named closure rows.
 /// Future unpublished dates remain explicit projections.
-pub const HOLIDAYS: &[(i32, u8, u8)] = &[
+pub(crate) const HOLIDAYS: &[(i32, u8, u8)] = &[
     // 2020
     (2020, 1, 1),   // New Year's Day
     (2020, 1, 27),  // The third day of Chinese New Year
@@ -369,34 +366,7 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
 
 // ─── Lookup ──────────────────────────────────────────────────────────────────
 
-/// True if `date` is an HKEX trading-calendar holiday in the snapshot
-/// window [`COVERAGE`].
-///
-/// Lookup is a binary search over [`HOLIDAYS`], which is sorted in
-/// ascending chronological order. Dates whose year falls outside
-/// [`COVERAGE`] return `false` — the snapshot makes no claim about them,
-/// and the caller is responsible for refreshing the table when the
-/// horizon advances.
-///
-/// Weekends are NOT classified as holidays here — they are handled by the
-/// caller's business-day predicate (see the `is_business_day` dispatcher
-/// in [`crate::calendar`]). A rule date that happens to fall on a Sunday
-/// is reported on its observed Monday (already baked into [`HOLIDAYS`]).
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::calendar::hong_kong;
-///
-/// // Christmas Day 2024 is an HKEX holiday.
-/// assert!(hong_kong::is_holiday(Date::ymd(2024, 12, 25).unwrap()));
-///
-/// // Christmas Eve 2024 is a regular trading day.
-/// assert!(!hong_kong::is_holiday(Date::ymd(2024, 12, 24).unwrap()));
-/// ```
-#[must_use]
-pub fn is_holiday(date: Date) -> bool {
+pub(crate) fn is_holiday(date: Date) -> bool {
     let key = (date.year(), date.month(), date.day());
     HOLIDAYS.binary_search(&key).is_ok()
 }
@@ -534,5 +504,47 @@ mod tests {
                 "no holidays listed for {year}",
             );
         }
+    }
+    // Complete primary schedules linked in the module documentation, checked
+    // 2026-10-23. This compares every date, including open days and weekends.
+    #[test]
+    fn complete_verified_schedules_match_primary_sources() {
+        let expected = &[
+            // 2026
+            (2026, 1, 1),
+            (2026, 2, 17),
+            (2026, 2, 18),
+            (2026, 2, 19),
+            (2026, 4, 3),
+            (2026, 4, 6),
+            (2026, 4, 7),
+            (2026, 5, 1),
+            (2026, 5, 25),
+            (2026, 6, 19),
+            (2026, 7, 1),
+            (2026, 10, 1),
+            (2026, 10, 19),
+            (2026, 12, 25),
+            // 2027
+            (2027, 1, 1),
+            (2027, 2, 8),
+            (2027, 2, 9),
+            (2027, 3, 26),
+            (2027, 3, 29),
+            (2027, 4, 5),
+            (2027, 5, 13),
+            (2027, 6, 9),
+            (2027, 7, 1),
+            (2027, 9, 16),
+            (2027, 10, 1),
+            (2027, 10, 8),
+            (2027, 12, 27),
+        ];
+        super::super::assert_verified_schedule(
+            super::super::Calendar::HongKong,
+            2026,
+            2027,
+            expected,
+        );
     }
 }

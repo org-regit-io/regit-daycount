@@ -1,0 +1,13 @@
+# Latest stable releases checked on 2026-10-23.
+# run.py explicitly overrides upstream dependency bounds and validates these versions.
+QuantLib==1.44
+financepy==1.1.2
+python-dateutil==3.0.0
+convertdate==2.5.1
+holidays==0.107
+PyMeeus==0.5.12
+six==1.17.0
+numpy==2.5.4
+numba==0.68.0
+llvmlite==0.50.0
+scipy==1.18.1

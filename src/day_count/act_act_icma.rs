@@ -1,125 +1,59 @@
 // Copyright 2026 Regit.io — Nicolas Koenig
 // SPDX-License-Identifier: Apache-2.0
 
-//! Act/Act (ICMA) — ICMA Rule 251.
+//! Act/Act ICMA for an accrual contained in one reference coupon period.
 //!
-//! Act/Act (ICMA) is the bond-market day-count convention prescribed by the
-//! International Capital Market Association in Rule 251 and used to compute
-//! accrued interest on fixed-rate bonds the world over. Unlike the
-//! money-market fractions (Act/360, Act/365F) the denominator is not a
-//! constant: it is the actual length, in calendar days, of the *reference*
-//! coupon period multiplied by the coupon frequency. A semi-annual bond
-//! whose calculation period coincides with one full coupon period therefore
-//! always returns exactly `0.5`, regardless of whether that period happens
-//! to be 181 or 184 days long — the property the bond market wants from a
-//! "fair fraction of a coupon".
+//! The fraction is the signed accrual day count divided by the reference
+//! period's day count and the number of coupon payments per year. A full
+//! regular semiannual reference period therefore has fraction `0.5`.
 //!
-//! This module implements the **regular-period** case only: the calculation
-//! period sits inside (or coincides with) one reference coupon period. The
-//! standard further prescribes a split-into-regular-sub-periods procedure
-//! for irregular (long / short) first or last coupons; that variant is
-//! outside this module's scope. Callers must decompose accruals spanning
-//! multiple reference periods into contained subperiods.
+//! The caller supplies the contractual regular or notional reference period
+//! and its frequency. The implementation checks ordering, nonzero frequency,
+//! and containment; dates alone cannot establish whether the reference period
+//! is the correct one for a particular security. Long coupons or accruals
+//! spanning multiple reference periods must be decomposed by the caller and
+//! calculated separately. No schedule or frequency is inferred.
 //!
-//! # Algorithm
-//!
-//! ```text
-//! fraction(start, end, ref_start, ref_end, freq)
-//!     = days_between(start, end) / (freq * days_between(ref_start, ref_end))
-//! ```
-//!
-//! Where `days_between` is the signed count of days from the first argument
-//! to the second. `freq` is the integer coupon frequency:
-//! 1 (annual), 2 (semi-annual), 4 (quarterly), 12 (monthly).
-//!
-//! # Invalid input
-//!
-//! [`try_fraction`] rejects zero frequency, empty or inverted reference
-//! periods, and accrual endpoints outside the single reference period.
-//! The legacy [`fraction`] entry point returns `NaN` for those errors.
-//! Reverse accruals use an ordered reference period and a signed numerator.
-//!
-//! # Worked example — full semi-annual period
-//!
-//! ```text
-//! start     = 2026-03-01
-//! end       = 2026-09-01
-//! ref_start = 2026-03-01    (calculation period coincides with the
-//! ref_end   = 2026-09-01     reference coupon period)
-//! freq      = 2             (semi-annual)
-//! days(calc) = 31 + 30 + 31 + 30 + 31 + 31 = 184
-//! days(ref)  = 184          (same interval)
-//! f          = 184 / (2 * 184) = 0.500000000000000
-//! ```
-//!
-//! # References
-//!
-//! - International Capital Market Association, *ICMA Rule 251 — Accrued
-//!   Interest Calculation*.
+//! Reference: ICMA Rule 251, accrued interest calculation.
 
 use crate::date::Date;
 
-/// Computes the Act/Act (ICMA) year fraction for a regular calculation
-/// period.
+use super::{CouponPeriod, DayCountError};
+
+/// Computes Act/Act ICMA within a single reference coupon period.
 ///
-/// The formula is `days_between(start, end) / (freq *
-/// days_between(ref_start, ref_end))`, where the reference period is the
-/// one coupon period that contains (or coincides with) the calculation
-/// period. See the module-level docstring for the full algorithm, the
-/// regular-period precondition, and the defensive behaviour for
-/// degenerate inputs.
+/// `freq` is the positive number of coupon payments per year, such as `1`
+/// (annual), `2` (semiannual), `4` (quarterly), or `12` (monthly).
+/// Reversed accruals use the same ordered reference period and negate the
+/// result. Equal accrual endpoints return zero after context validation.
 ///
-/// # Arguments
+/// # Errors
 ///
-/// - `start`, `end`: the calculation period.
-/// - `ref_start`, `ref_end`: the reference coupon period that contains
-///   `[start, end)`.
-/// - `freq`: coupon frequency — `1` (annual), `2` (semi-annual), `4`
-///   (quarterly), `12` (monthly).
-///
-/// Returns `NaN` for invalid coupon context; use [`try_fraction`] to
-/// distinguish the validation errors.
+/// Returns [`DayCountError::ZeroFrequency`] for zero frequency,
+/// [`DayCountError::InvalidReferencePeriod`] for an empty or inverted
+/// reference period, or [`DayCountError::AccrualOutsideReferencePeriod`]
+/// if either accrual endpoint falls outside it. A multi-period accrual must
+/// be split using the instrument's actual schedule.
 ///
 /// # Examples
 ///
 /// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::day_count::act_act_icma;
-///
-/// // Semi-annual bond, calculation period coincides with the reference
-/// // coupon period: f = 184 / (2 * 184) = 0.5 exactly.
-/// let start     = Date::ymd(2026, 3, 1).unwrap();
-/// let end       = Date::ymd(2026, 9, 1).unwrap();
-/// let ref_start = start;
-/// let ref_end   = end;
-/// let f = act_act_icma::fraction(start, end, ref_start, ref_end, 2);
-/// assert!((f - 0.5).abs() < 1e-12);
+/// use regit_daycount::{Date, day_count::act_act_icma};
+/// let ref_start = Date::ymd(2026, 3, 1).unwrap();
+/// let ref_end = Date::ymd(2026, 9, 1).unwrap();
+/// let end = Date::ymd(2026, 6, 1).unwrap();
+/// // 92 accrual days / (2 payments per year * 184 reference days).
+/// let fraction = act_act_icma::try_fraction(ref_start, end, ref_start, ref_end, 2).unwrap();
+/// assert!((fraction - 0.25).abs() < 1e-12);
 /// ```
-#[must_use]
-pub fn fraction(start: Date, end: Date, ref_start: Date, ref_end: Date, freq: u8) -> f64 {
-    try_fraction(start, end, ref_start, ref_end, freq).unwrap_or(f64::NAN)
-}
-
-/// Computes Act/Act ICMA for an accrual contained in one reference period.
-///
-/// Reversed accrual endpoints are supported with the same ordered reference
-/// period. Irregular schedules spanning multiple reference periods must be
-/// decomposed by the caller.
-///
-/// # Errors
-///
-/// Returns [`super::DayCountError::ZeroFrequency`] for zero frequency,
-/// [`super::DayCountError::InvalidReferencePeriod`] for an empty or inverted
-/// reference period, or [`super::DayCountError::AccrualOutsideReferencePeriod`]
-/// if either accrual endpoint falls outside it.
 pub fn try_fraction(
     start: Date,
     end: Date,
     ref_start: Date,
     ref_end: Date,
     freq: u8,
-) -> Result<f64, super::DayCountError> {
-    super::CouponPeriod {
+) -> Result<f64, DayCountError> {
+    CouponPeriod {
         start: ref_start,
         end: ref_end,
         frequency: freq,
@@ -134,106 +68,96 @@ pub fn try_fraction(
 mod tests {
     use super::*;
 
-    // The tolerance 1e-12 is the working slack used throughout this crate's
-    // numeric assertions: it is loose enough that a benign last-bit rounding
-    // never causes a spurious failure, and tight enough that any drift large
-    // enough to mis-state a cashflow at the cent level (≥ 1e-9 on a unit
-    // notional) is caught immediately. We deliberately do not assert against
-    // `f64::EPSILON`; the goal is auditable, not maximally-tight.
-    const TOL: f64 = 1e-12;
-
-    // ─── ICMA worked example — full semi-annual period ───────────────────
-
-    #[test]
-    fn icma_semiannual_full_period_is_half() {
-        // doc/ALGORITHMS.md §A.4 worked example:
-        //   start = ref_start = 2026-03-01
-        //   end   = ref_end   = 2026-09-01
-        //   freq  = 2 (semi-annual)
-        //   days(calc) = 31 + 30 + 31 + 30 + 31 + 31 = 184
-        //   days(ref)  = 184
-        //   f = 184 / (2 * 184) = 0.500000000000000
-        let start = Date::ymd(2026, 3, 1).unwrap();
-        let end = Date::ymd(2026, 9, 1).unwrap();
-        assert_eq!(start.days_between(end), 184);
-        let f = fraction(start, end, start, end, 2);
-        assert!((f - 0.5).abs() < TOL);
+    fn d(year: i32, month: u8, day: u8) -> Date {
+        Date::ymd(year, month, day).unwrap()
     }
 
-    // ─── Half of a semi-annual period ────────────────────────────────────
-
     #[test]
-    fn icma_semiannual_half_of_period_is_quarter() {
-        // Calculation period covers the first three months of a six-month
-        // reference coupon period.
-        //   start     = 2026-03-01, end     = 2026-06-01  → 31+30+31 = 92
-        //   ref_start = 2026-03-01, ref_end = 2026-09-01  → 184 (above)
-        //   freq      = 2
-        //   f = 92 / (2 * 184) = 92 / 368 = 0.250000000000000
-        let start = Date::ymd(2026, 3, 1).unwrap();
-        let end = Date::ymd(2026, 6, 1).unwrap();
-        let ref_start = Date::ymd(2026, 3, 1).unwrap();
-        let ref_end = Date::ymd(2026, 9, 1).unwrap();
-        assert_eq!(start.days_between(end), 92);
-        assert_eq!(ref_start.days_between(ref_end), 184);
-        let f = fraction(start, end, ref_start, ref_end, 2);
-        assert!((f - 0.25).abs() < TOL);
+    fn coupon_frequency_controls_full_regular_periods() {
+        for (start, end, frequency, expected_days) in [
+            (d(2026, 1, 1), d(2027, 1, 1), 1, 365),
+            (d(2026, 3, 1), d(2026, 9, 1), 2, 184),
+            (d(2026, 3, 1), d(2026, 6, 1), 4, 92),
+            (d(2024, 2, 1), d(2024, 3, 1), 12, 29),
+        ] {
+            assert_eq!(start.days_between(end), expected_days);
+            let actual = try_fraction(start, end, start, end, frequency).unwrap();
+            assert!((actual - 1.0 / f64::from(frequency)).abs() < 1e-12);
+        }
     }
 
-    // ─── Annual full period ──────────────────────────────────────────────
-
     #[test]
-    fn icma_annual_full_period_is_one() {
-        // Annual coupon, calculation period coincides with the reference
-        // coupon period (one full non-leap year).
-        //   start = ref_start = 2026-01-01
-        //   end   = ref_end   = 2027-01-01
-        //   freq  = 1
-        //   days(calc) = days(ref) = 365
-        //   f = 365 / (1 * 365) = 1.000000000000000
-        let start = Date::ymd(2026, 1, 1).unwrap();
-        let end = Date::ymd(2027, 1, 1).unwrap();
-        assert_eq!(start.days_between(end), 365);
-        let f = fraction(start, end, start, end, 1);
-        assert!((f - 1.0).abs() < TOL);
+    fn short_accrual_uses_the_full_notional_reference_period() {
+        let ref_start = d(2026, 3, 1);
+        let ref_end = d(2026, 9, 1);
+        let start = d(2026, 6, 1);
+        assert_eq!(start.days_between(ref_end), 92);
+        let forward = try_fraction(start, ref_end, ref_start, ref_end, 2).unwrap();
+        let reverse = try_fraction(ref_end, start, ref_start, ref_end, 2).unwrap();
+        assert!((forward - 0.25).abs() < 1e-12);
+        assert!((reverse + 0.25).abs() < 1e-12);
     }
 
-    // ─── Quarterly full period ───────────────────────────────────────────
-
     #[test]
-    fn icma_quarterly_full_period_is_quarter() {
-        // Quarterly coupon, calculation period coincides with the
-        // reference coupon period.
-        //   start = ref_start = 2026-03-01
-        //   end   = ref_end   = 2026-06-01
-        //   freq  = 4
-        //   days(calc) = days(ref) = 92
-        //   f = 92 / (4 * 92) = 0.250000000000000
-        let start = Date::ymd(2026, 3, 1).unwrap();
-        let end = Date::ymd(2026, 6, 1).unwrap();
-        assert_eq!(start.days_between(end), 92);
-        let f = fraction(start, end, start, end, 4);
-        assert!((f - 0.25).abs() < TOL);
+    fn invalid_coupon_context_returns_a_typed_error() {
+        let start = d(2026, 3, 1);
+        let end = d(2026, 9, 1);
+        assert_eq!(
+            try_fraction(start, end, start, end, 0),
+            Err(DayCountError::ZeroFrequency)
+        );
+        for (ref_start, ref_end) in [(start, start), (end, start)] {
+            assert_eq!(
+                try_fraction(start, end, ref_start, ref_end, 2),
+                Err(DayCountError::InvalidReferencePeriod)
+            );
+        }
+        for (accrual_start, accrual_end) in [
+            (d(2026, 2, 28), end),
+            (start, d(2026, 9, 2)),
+            (end, d(2026, 2, 28)),
+            (d(2026, 9, 2), start),
+        ] {
+            assert_eq!(
+                try_fraction(accrual_start, accrual_end, start, end, 2),
+                Err(DayCountError::AccrualOutsideReferencePeriod)
+            );
+        }
     }
 
-    // ─── Defensive: zero frequency ───────────────────────────────────────
-
     #[test]
-    fn icma_zero_freq_returns_nan() {
-        let start = Date::ymd(2026, 3, 1).unwrap();
-        let end = Date::ymd(2026, 9, 1).unwrap();
-        let f = fraction(start, end, start, end, 0);
-        assert!(f.is_nan());
+    fn equal_dates_still_require_valid_context() {
+        let point = d(2026, 3, 1);
+        assert_eq!(try_fraction(point, point, point, d(2026, 9, 1), 2), Ok(0.0));
+        assert_eq!(
+            try_fraction(point, point, point, point, 2),
+            Err(DayCountError::InvalidReferencePeriod)
+        );
     }
 
-    // ─── Defensive: degenerate reference period ──────────────────────────
+    #[test]
+    fn long_coupon_is_rejected_instead_of_inventing_reference_periods() {
+        let start = d(2026, 1, 1);
+        let end = d(2026, 9, 1);
+        let ref_start = d(2026, 3, 1);
+        assert_eq!(
+            try_fraction(start, end, ref_start, end, 2),
+            Err(DayCountError::AccrualOutsideReferencePeriod)
+        );
+        // The caller's schedule supplies the preceding notional period.
+        let first = try_fraction(start, ref_start, d(2025, 9, 1), ref_start, 2).unwrap();
+        let second = try_fraction(ref_start, end, ref_start, end, 2).unwrap();
+        assert!((first + second - (59.0 / 362.0 + 0.5)).abs() < 1e-12);
+    }
 
     #[test]
-    fn icma_zero_ref_period_returns_nan() {
-        let start = Date::ymd(2026, 3, 1).unwrap();
-        let end = Date::ymd(2026, 9, 1).unwrap();
-        let ref_pt = Date::ymd(2026, 3, 1).unwrap();
-        let f = fraction(start, end, ref_pt, ref_pt, 2);
-        assert!(f.is_nan());
+    fn valid_boundary_reference_periods_are_finite() {
+        for (start, end) in [
+            (d(1583, 1, 1), d(1583, 7, 1)),
+            (d(9999, 6, 30), d(9999, 12, 31)),
+        ] {
+            let fraction = try_fraction(start, end, start, end, 2).unwrap();
+            assert!((fraction - 0.5).abs() < 1e-12);
+        }
     }
 }

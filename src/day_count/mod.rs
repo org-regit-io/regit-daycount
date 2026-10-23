@@ -4,7 +4,7 @@
 //! Catalogue of day-count fractions.
 //!
 //! A day-count fraction is the rule that maps a date interval `(start, end)`
-//! to a year-fraction `f`. It is the parameter that turns a daily interest
+//! to a year-fraction `f`. It is the parameter that turns an annualized interest
 //! rate into an interest amount for an actual interval — and getting it
 //! wrong silently mis-states a cashflow.
 //!
@@ -23,7 +23,7 @@
 //! Act/365L             ICMA / sterling money-market
 //! NL/365               No-Leap — 29 Feb skipped in the numerator
 //! Bus/252              Brazilian — business days only, denominator 252
-//! 1/1                  OIS shortcut
+//! 1/1                  explicitly defined constant-one shortcut
 //! ```
 //!
 //! # Dispatchers
@@ -34,11 +34,9 @@
 //! [`try_fraction_with_business_days`] additionally accepts the predicate
 //! required by Bus/252.
 //!
-//! The source-compatible [`fraction`] wrapper returns `NaN` whenever the
-//! checked entry point cannot calculate without context. In particular,
-//! Act/365L and 30E/360 ISDA no longer invent schedule or maturity defaults.
-//! [`year_fraction_with_freq`] supplies coupon context for both Act/365L
-//! and Act/Act ICMA; its checked equivalent is [`try_year_fraction_with_freq`].
+//! Schedule-dependent conventions have no context-free entry point.
+//! The per-convention functions that need no additional context return a
+//! finite `f64` for every pair of valid dates.
 //!
 //! Reverse and equal endpoints follow each convention's arithmetic. The
 //! schedule-aware conventions use an ordered coupon period even for reversed
@@ -71,6 +69,7 @@ use crate::date::Date;
 /// assert_eq!(basis, DayCount::Act360);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DayCount {
     /// Actual / 360 — the money-market default — ISDA 2006 §4.16(e).
     Act360,
@@ -94,7 +93,7 @@ pub enum DayCount {
     Nl365,
     /// Business / 252 — Brazilian convention — denominator is 252.
     Bus252,
-    /// 1 / 1 — the OIS shortcut; every interval has fraction 1.
+    /// 1 / 1 — constant-one shortcut; every interval has fraction 1.
     OneOne,
 }
 
@@ -121,8 +120,10 @@ pub mod thirty_e_360_isda;
 ///
 /// `frequency` is the positive number of coupon payments per year. Both
 /// accrual endpoints must lie within `[start, end]`. The caller remains
-/// responsible for supplying the contractual schedule and for decomposing
-/// irregular coupons that span multiple reference periods.
+/// responsible for supplying the contractual regular or notional reference
+/// period, its frequency, and for decomposing irregular coupons that span
+/// multiple reference periods. Ordering and containment are checked; the
+/// correct financial schedule cannot be established from these fields alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CouponPeriod {
     /// Start of the reference coupon period.
@@ -239,212 +240,159 @@ pub fn try_fraction_with_business_days(
     }
 }
 
-/// Computes the year fraction under `basis` between two dates.
-///
-/// Legacy context-free wrapper around [`try_fraction`]. Act/365L,
-/// Act/Act ICMA, 30E/360 ISDA and Bus/252 require additional context and
-/// return `NaN`. All other variants compute directly.
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::{Date, DayCount, day_count};
-///
-/// let start = Date::ymd(2026, 1, 1).unwrap();
-/// let end   = Date::ymd(2026, 4, 1).unwrap();
-/// let yf    = day_count::fraction(start, end, DayCount::Act360);
-/// assert!((yf - 90.0 / 360.0).abs() < 1e-12);
-///
-/// // ActActIcma needs a reference period — fraction returns NaN.
-/// assert!(day_count::fraction(start, end, DayCount::ActActIcma).is_nan());
-/// ```
-#[must_use]
-pub fn fraction(start: Date, end: Date, basis: DayCount) -> f64 {
-    try_fraction(start, end, basis, DayCountContext::default()).unwrap_or(f64::NAN)
-}
-
-/// Computes a year fraction using an explicit coupon period and frequency.
-///
-/// Act/Act ICMA and Act/365L consume the coupon arguments. Other variants
-/// delegate to [`fraction`]; 30E/360 ISDA and Bus/252 still return `NaN`
-/// because the signature lacks maturity and business-day context.
-/// Invalid coupon context also returns `NaN`; use
-/// [`try_year_fraction_with_freq`] for a typed error.
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::{Date, DayCount, day_count};
-///
-/// // ActAct ICMA — semi-annual coupon, regular period.
-/// let start = Date::ymd(2026, 3, 1).unwrap();
-/// let end   = Date::ymd(2026, 9, 1).unwrap();
-/// let yf = day_count::year_fraction_with_freq(
-///     start, end, DayCount::ActActIcma, 2, start, end,
-/// );
-/// assert!((yf - 0.5).abs() < 1e-12);
-/// ```
-#[must_use]
-pub fn year_fraction_with_freq(
-    start: Date,
-    end: Date,
-    basis: DayCount,
-    freq: u8,
-    ref_start: Date,
-    ref_end: Date,
-) -> f64 {
-    try_year_fraction_with_freq(start, end, basis, freq, ref_start, ref_end).unwrap_or(f64::NAN)
-}
-
-/// Computes a year fraction using a single explicit reference coupon period.
-///
-/// The coupon arguments are used by Act/Act ICMA and Act/365L only.
-///
-/// # Errors
-///
-/// Returns the same errors as [`try_fraction`]. 30E/360 ISDA requires an
-/// explicit maturity flag, and Bus/252 requires a business-day predicate;
-/// this signature cannot supply those, so it returns a missing-context error.
-pub fn try_year_fraction_with_freq(
-    start: Date,
-    end: Date,
-    basis: DayCount,
-    freq: u8,
-    ref_start: Date,
-    ref_end: Date,
-) -> Result<f64, DayCountError> {
-    try_fraction(
-        start,
-        end,
-        basis,
-        DayCountContext {
-            coupon: Some(CouponPeriod {
-                start: ref_start,
-                end: ref_end,
-                frequency: freq,
-            }),
-            end_is_maturity: None,
-        },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const TOL: f64 = 1e-12;
+    fn d(year: i32, month: u8, day: u8) -> Date {
+        Date::ymd(year, month, day).unwrap()
+    }
 
-    // ─── fraction dispatcher ─────────────────────────────────────────────
-
-    #[test]
-    fn dispatcher_routes_act_360() {
-        let s = Date::ymd(2026, 1, 1).unwrap();
-        let e = Date::ymd(2026, 4, 1).unwrap();
-        assert!((fraction(s, e, DayCount::Act360) - 90.0 / 360.0).abs() < TOL);
+    fn checked(start: Date, end: Date, basis: DayCount) -> Result<f64, DayCountError> {
+        try_fraction(start, end, basis, DayCountContext::default())
     }
 
     #[test]
-    fn dispatcher_routes_act_365f() {
-        let s = Date::ymd(2026, 1, 1).unwrap();
-        let e = Date::ymd(2026, 4, 1).unwrap();
-        assert!((fraction(s, e, DayCount::Act365F) - 90.0 / 365.0).abs() < TOL);
+    fn dispatch_preserves_each_context_free_conventions_formula() {
+        let start = d(2024, 1, 15);
+        let end = d(2024, 7, 31);
+        for (basis, expected) in [
+            (DayCount::Act360, 198.0 / 360.0),
+            (DayCount::Act365F, 198.0 / 365.0),
+            (DayCount::ActActIsda, 198.0 / 366.0),
+            (DayCount::Thirty360BondBasis, 196.0 / 360.0),
+            (DayCount::ThirtyE360, 195.0 / 360.0),
+            (DayCount::Nl365, 197.0 / 365.0),
+            (DayCount::OneOne, 1.0),
+        ] {
+            let actual = checked(start, end, basis).unwrap();
+            assert!((actual - expected).abs() < 1e-12, "{basis:?}");
+        }
     }
 
     #[test]
-    fn dispatcher_routes_act_act_isda() {
-        // ISDA 2006 §4.16(b) worked example: 2007-12-28 → 2008-02-29
-        // = 4/365 + 59/366 = 0.172161089901939.
-        let s = Date::ymd(2007, 12, 28).unwrap();
-        let e = Date::ymd(2008, 2, 29).unwrap();
-        let expected = 4.0 / 365.0 + 59.0 / 366.0;
-        assert!((fraction(s, e, DayCount::ActActIsda) - expected).abs() < TOL);
+    fn absent_context_is_an_error_even_for_equal_dates() {
+        let point = d(2024, 2, 29);
+        for basis in [DayCount::Act365L, DayCount::ActActIcma] {
+            assert_eq!(
+                checked(point, point, basis),
+                Err(DayCountError::MissingCouponPeriod)
+            );
+        }
+        assert_eq!(
+            checked(point, point, DayCount::ThirtyE360Isda),
+            Err(DayCountError::MissingMaturity)
+        );
+        assert_eq!(
+            checked(point, point, DayCount::Bus252),
+            Err(DayCountError::MissingBusinessDayPredicate)
+        );
     }
 
     #[test]
-    fn dispatcher_routes_thirty_360_bond_basis() {
-        let s = Date::ymd(2026, 1, 15).unwrap();
-        let e = Date::ymd(2026, 7, 15).unwrap();
-        assert!((fraction(s, e, DayCount::Thirty360BondBasis) - 0.5).abs() < TOL);
+    fn coupon_context_is_shared_without_inventing_schedule_defaults() {
+        let start = d(2024, 4, 1);
+        let end = d(2024, 7, 1);
+        let context = DayCountContext {
+            coupon: Some(CouponPeriod {
+                start,
+                end,
+                frequency: 4,
+            }),
+            ..DayCountContext::default()
+        };
+        assert!(
+            (try_fraction(start, end, DayCount::Act365L, context).unwrap() - 91.0 / 366.0).abs()
+                < 1e-12
+        );
+        assert!(
+            (try_fraction(start, end, DayCount::ActActIcma, context).unwrap() - 0.25).abs() < 1e-12
+        );
+        let invalid_context = DayCountContext {
+            coupon: Some(CouponPeriod {
+                frequency: 0,
+                ..context.coupon.unwrap()
+            }),
+            ..context
+        };
+        for basis in [DayCount::Act365L, DayCount::ActActIcma] {
+            assert_eq!(
+                try_fraction(start, end, basis, invalid_context),
+                Err(DayCountError::ZeroFrequency)
+            );
+        }
+        // Unused context has no effect on a convention defined only by dates.
+        assert!(
+            (try_fraction(start, end, DayCount::Act360, invalid_context).unwrap() - 91.0 / 360.0)
+                .abs()
+                < 1e-12
+        );
     }
 
     #[test]
-    fn dispatcher_routes_thirty_e_360() {
-        // The 30E/360 case where D2 = 31 is unconditionally rewritten to
-        // 30 — 2026-01-15 → 2026-07-31 gives 195/360 here vs 196/360 under
-        // BondBasis.
-        let s = Date::ymd(2026, 1, 15).unwrap();
-        let e = Date::ymd(2026, 7, 31).unwrap();
-        assert!((fraction(s, e, DayCount::ThirtyE360) - 195.0 / 360.0).abs() < TOL);
+    fn maturity_context_preserves_the_february_exception() {
+        let start = d(2024, 1, 31);
+        let end = d(2025, 2, 28);
+        for (is_maturity, numerator) in [(true, 388.0), (false, 390.0)] {
+            let context = DayCountContext {
+                end_is_maturity: Some(is_maturity),
+                ..DayCountContext::default()
+            };
+            assert!(
+                (try_fraction(start, end, DayCount::ThirtyE360Isda, context).unwrap()
+                    - numerator / 360.0)
+                    .abs()
+                    < 1e-12
+            );
+        }
     }
 
     #[test]
-    fn dispatcher_requires_thirty_e_360_isda_maturity_context() {
-        let s = Date::ymd(2024, 2, 29).unwrap();
-        let e = Date::ymd(2024, 8, 31).unwrap();
-        assert!(fraction(s, e, DayCount::ThirtyE360Isda).is_nan());
+    fn predicate_is_used_only_for_business252() {
+        let start = d(2026, 9, 1);
+        let end = d(2026, 9, 10);
+        let is_business = |date: Date| {
+            !matches!(
+                date.day_of_week(),
+                crate::Weekday::Sat | crate::Weekday::Sun
+            ) && date != d(2026, 9, 7)
+        };
+        let result = try_fraction_with_business_days(
+            start,
+            end,
+            DayCount::Bus252,
+            DayCountContext::default(),
+            is_business,
+        )
+        .unwrap();
+        assert!((result - 6.0 / 252.0).abs() < 1e-12);
+        let result = try_fraction_with_business_days(
+            start,
+            end,
+            DayCount::Act360,
+            DayCountContext::default(),
+            |_| panic!("date-only convention must not consult the predicate"),
+        )
+        .unwrap();
+        assert!((result - 9.0 / 360.0).abs() < 1e-12);
     }
 
     #[test]
-    fn dispatcher_requires_act_365l_coupon_context() {
-        let s = Date::ymd(2024, 1, 1).unwrap();
-        let e = Date::ymd(2024, 4, 1).unwrap();
-        assert!(fraction(s, e, DayCount::Act365L).is_nan());
-    }
-
-    #[test]
-    fn dispatcher_routes_nl_365() {
-        // Q1 2024: 91 actual days minus 1 for 2024-02-29 = 90; /365.
-        let s = Date::ymd(2024, 1, 1).unwrap();
-        let e = Date::ymd(2024, 4, 1).unwrap();
-        assert!((fraction(s, e, DayCount::Nl365) - 90.0 / 365.0).abs() < TOL);
-    }
-
-    #[test]
-    fn dispatcher_routes_one_one() {
-        let s = Date::ymd(2026, 1, 1).unwrap();
-        let e = Date::ymd(2026, 4, 1).unwrap();
-        assert!((fraction(s, e, DayCount::OneOne) - 1.0).abs() < TOL);
-    }
-
-    #[test]
-    fn dispatcher_returns_nan_for_act_act_icma() {
-        let s = Date::ymd(2026, 3, 1).unwrap();
-        let e = Date::ymd(2026, 9, 1).unwrap();
-        assert!(fraction(s, e, DayCount::ActActIcma).is_nan());
-    }
-
-    #[test]
-    fn dispatcher_returns_nan_for_bus_252() {
-        let s = Date::ymd(2026, 5, 1).unwrap();
-        let e = Date::ymd(2026, 5, 15).unwrap();
-        assert!(fraction(s, e, DayCount::Bus252).is_nan());
-    }
-
-    // ─── year_fraction_with_freq dispatcher ──────────────────────────────
-
-    #[test]
-    fn freq_dispatcher_routes_act_act_icma() {
-        let s = Date::ymd(2026, 3, 1).unwrap();
-        let e = Date::ymd(2026, 9, 1).unwrap();
-        let yf = year_fraction_with_freq(s, e, DayCount::ActActIcma, 2, s, e);
-        assert!((yf - 0.5).abs() < TOL);
-    }
-
-    #[test]
-    fn freq_dispatcher_ignores_ref_args_for_other_variants() {
-        // Conventions independent of coupon context ignore these fields.
-        let s = Date::ymd(2026, 1, 1).unwrap();
-        let e = Date::ymd(2026, 4, 1).unwrap();
-        let with_freq = year_fraction_with_freq(s, e, DayCount::Act360, 99, s, e);
-        let direct = fraction(s, e, DayCount::Act360);
-        assert!((with_freq - direct).abs() < TOL);
-    }
-
-    #[test]
-    fn freq_dispatcher_still_nan_for_bus_252() {
-        let s = Date::ymd(2026, 5, 1).unwrap();
-        let e = Date::ymd(2026, 5, 15).unwrap();
-        let yf = year_fraction_with_freq(s, e, DayCount::Bus252, 1, s, e);
-        assert!(yf.is_nan());
+    fn context_free_dispatch_is_finite_at_both_date_boundaries() {
+        let first = d(1583, 1, 1);
+        let last = d(9999, 12, 31);
+        for basis in [
+            DayCount::Act360,
+            DayCount::Act365F,
+            DayCount::ActActIsda,
+            DayCount::Thirty360BondBasis,
+            DayCount::ThirtyE360,
+            DayCount::Nl365,
+            DayCount::OneOne,
+        ] {
+            for (start, end) in [(first, last), (last, first), (first, first), (last, last)] {
+                assert!(checked(start, end, basis).unwrap().is_finite(), "{basis:?}");
+            }
+        }
     }
 }

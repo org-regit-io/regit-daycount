@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v7.1.0
         with:
@@ -28,19 +30,40 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2.9.3
 
-      - name: Install pinned development oracle
+      - name: Install pinned validation tools
         run: |
-          python3 -m venv /tmp/daycount-oracle
-          /tmp/daycount-oracle/bin/python -m pip install -r validation/requirements.txt
+          python3 -m pip install uv==0.13.5
+          rustup toolchain install 1.95.0 --profile minimal
+          cargo install cargo-llvm-cov --version 0.8.7 --locked
 
-      - name: Regenerate fixtures and compare Rust
-        run: /tmp/daycount-oracle/bin/python validation/oracle.py --check --rust
+      - name: Compare independent Python and Rust processes
+        run: uv run tests/run.py --coverage
+
+  compatibility:
+    name: Public API compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install compatibility checker
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          cargo install cargo-semver-checks --version 0.48.0 --locked
+
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: Check against latest released API
+        run: cargo +1.95.0 semver-checks --all-features --baseline-rev "$(git describe --tags --abbrev=0)"
 
   msrv:
     name: Minimum Rust 1.85
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install minimum supported Rust
         run: rustup toolchain install 1.85.0 --profile minimal
@@ -57,6 +80,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       # Honour rust-toolchain.toml: installs the pinned channel (1.99.1)
       # with declared components and targets.
@@ -80,7 +105,9 @@ jobs:
       - name: Doc
         env:
           RUSTDOCFLAGS: '-D warnings'
-        run: cargo doc --no-deps --all-features --locked
+        run: |
+          cargo doc --no-deps --all-features --locked
+          cargo doc --no-deps --no-default-features --locked
 
       - name: Deny
         uses: EmbarkStudios/cargo-deny-action@v2.1.1
@@ -93,6 +120,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: rustup show
@@ -107,6 +136,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       # rust-toolchain.toml declares targets = [..., "thumbv7em-none-eabi"];
       # thumbv7em-none-eabi has no `std` at all, so a successful build is a

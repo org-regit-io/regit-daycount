@@ -1,91 +1,28 @@
 // Copyright 2026 Regit.io — Nicolas Koenig
 // SPDX-License-Identifier: Apache-2.0
 
-//! United Kingdom — Bank of England bank holiday schedule (England & Wales).
+//! England and Wales bank holidays, including proclamation holidays.
 //!
-//! This module is a dated snapshot of the bank-holiday list observed by the
-//! sterling market — the schedule the Bank of England publishes for England
-//! and Wales, and the schedule the London Stock Exchange and the GBP money
-//! and FX markets close on. Scotland and Northern Ireland diverge on two
-//! holidays (St Andrew's Day, the second January day) and are *not* covered
-//! by this snapshot; a GBP-market user wants the England & Wales list.
-//!
-//! Most dates are structural — derivable from the year by a closed-form
-//! rule — but two categories make a snapshot the source of truth:
-//!
-//! 1. Substitute days when New Year's Day, Christmas, or Boxing Day fall on
-//!    a weekend (the next available weekday is observed instead).
-//! 2. One-off royal-proclamation holidays (coronations, jubilees, state
-//!    funerals).
-//!
-//! # Holiday rules
-//!
-//! ```text
-//! New Year's Day       Jan 1 (observed Mon following if Sat/Sun)
-//! Good Friday          Easter Sunday − 2 days
-//! Easter Monday        Easter Sunday + 1 day
-//! Early May Bank Hol.  First Monday of May
-//!                      (2020: moved to Fri 8 May for the 75th anniversary
-//!                      of VE Day)
-//! Spring Bank Hol.     Last Monday of May
-//!                      (2022: moved to Thu 2 Jun for the Platinum Jubilee)
-//! Summer Bank Hol.     Last Monday of August
-//! Christmas Day        Dec 25 (observed Mon following if Sat/Sun)
-//! Boxing Day           Dec 26 (observed Mon following if Sat/Sun; if Dec 25
-//!                      is Sun the substitute Mon is taken by Christmas, so
-//!                      Boxing Day is observed Tue Dec 27; if Dec 25 is Sat
-//!                      the substitute Mon is taken by Christmas, so Boxing
-//!                      Day is observed Tue Dec 28)
-//! ```
-//!
-//! # Dated specials (2020–2040 window)
-//!
-//! ```text
-//! 2020-05-08  Early May Bank Holiday moved here for the VE Day 75th
-//! 2022-06-02  Spring Bank Holiday moved here for the Platinum Jubilee
-//! 2022-06-03  Platinum Jubilee Bank Holiday (extra)
-//! 2022-09-19  State Funeral of Queen Elizabeth II
-//! 2023-05-08  Coronation of King Charles III
-//! ```
-//!
-//! No further dated specials have been proclaimed in the 2020–2040 window
-//! at the snapshot date below; if the Crown proclaims another (a future
-//! royal wedding, a jubilee, a state funeral), update both [`HOLIDAYS`]
-//! and [`SNAPSHOT_DATE`].
-//!
-//! # Snapshot
-//!
-//! - Source: Bank of England bank-holiday schedule for England & Wales.
-//! - Snapshot date: [`SNAPSHOT_DATE`] — `2026-05-23`.
-//! - Coverage: [`COVERAGE`] — years `(2020, 2040)` inclusive (21 years).
-//! - Entries: 171 (8 per year × 21 years − 1 displaced 2020 Early May Bank
-//!   Holiday − 1 displaced 2022 Spring Bank Holiday + 5 dated specials).
-//!
-//! Out-of-coverage queries return `false` from [`is_holiday`]; a caller
-//! that needs an earlier or later year should extend the table and re-bump
-//! [`SNAPSHOT_DATE`] / [`COVERAGE`].
-//!
-//! # References
-//!
-//! - Bank of England, *UK bank holidays*,
-//!   <https://www.bankofengland.co.uk/markets/bank-holidays>.
-//! - HM Government, *UK bank holidays* (gov.uk),
-//!   <https://www.gov.uk/bank-holidays> — England and Wales.
-//! - Banking and Financial Dealings Act 1971 (c. 80), Schedule 1 — the
-//!   statutory schedule of bank holidays in England and Wales.
-//!
-//! # Verification status
-//!
-//! No complete primary-source annual audit has been retained for this
-//! table. Earlier prose asserted broader verification than its evidence
-//! established. Rule-derived regression tests check internal consistency;
-//! they do not establish market agreement. All available years currently
-//! require [`super::CoveragePolicy::AllowProjected`] in the checked APIs.
-//! Consult [`super::coverage`] for machine-readable horizons and refresh
-//! annual schedules from the primary sources before operational use.
-//!
+//! Scotland and Northern Ireland are different calendars. This is a full-day
+//! bank-holiday model, not an intraday sterling settlement schedule.
+//! Complete 2020–2028 England and Wales lists were checked on 2026-10-23:
+//! <https://www.gov.uk/bank-holidays>.
+//! Other available years are rule projections without an annual official audit.
 
 use crate::date::Date;
+
+/// Complete primary-source verified annual horizon (inclusive).
+pub const VERIFIED_YEARS: (i32, i32) = (2020, 2028);
+/// Date the primary annual schedules were checked.
+pub const VERIFIED_ON: &str = "2026-10-23";
+
+/// Query a named holiday with verified market coverage.
+///
+/// # Errors
+/// Returns a coverage error outside the verified annual horizon.
+pub fn try_is_holiday(date: Date) -> Result<bool, super::CalendarError> {
+    super::try_is_holiday(date, super::Calendar::UnitedKingdom)
+}
 
 // ─── Public snapshot constants ───────────────────────────────────────────────
 
@@ -94,8 +31,7 @@ use crate::date::Date;
 /// auditor.
 pub const SNAPSHOT_DATE: &str = "2026-05-23";
 
-/// Inclusive year range covered by [`HOLIDAYS`], `(min_year, max_year)`.
-/// Queries outside this window return `false` from [`is_holiday`].
+/// Inclusive available year range. Checked queries reject dates outside it.
 pub const COVERAGE: (i32, i32) = (2020, 2040);
 
 /// Every England & Wales bank holiday in the [`COVERAGE`] window, as
@@ -104,8 +40,8 @@ pub const COVERAGE: (i32, i32) = (2020, 2040);
 /// The list is the union of the structural holidays (computed by the
 /// closed-form rules in the module docstring) and the dated specials
 /// (royal proclamations and substitute days that displace a structural
-/// date). It is sorted so that [`is_holiday`] can binary-search it.
-pub const HOLIDAYS: &[(i32, u8, u8)] = &[
+/// date). It is sorted so that `is_holiday` can binary-search it.
+pub(crate) const HOLIDAYS: &[(i32, u8, u8)] = &[
     (2020, 1, 1),   // 2020-01-01 — New Year's Day
     (2020, 4, 10),  // 2020-04-10 — Good Friday
     (2020, 4, 13),  // 2020-04-13 — Easter Monday
@@ -281,34 +217,7 @@ pub const HOLIDAYS: &[(i32, u8, u8)] = &[
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/// Returns `true` if `date` is an England & Wales bank holiday under the
-/// Bank of England published schedule.
-///
-/// Implemented as a binary search over [`HOLIDAYS`]; the table is sorted
-/// chronologically (a debug-build self-test in this module's `#[cfg(test)]`
-/// block asserts that). Dates outside the [`COVERAGE`] window return
-/// `false` — a caller that needs an earlier or later year must extend the
-/// table.
-///
-/// Weekends are *not* implicitly holidays: this function answers only the
-/// bank-holiday question. Whether a date is a business day is the union
-/// of `!is_holiday(date)` and `date.day_of_week()` not being Saturday or
-/// Sunday — applied by the dispatcher in `calendar::mod`.
-///
-/// # Examples
-///
-/// ```
-/// use regit_daycount::Date;
-/// use regit_daycount::calendar::united_kingdom::is_holiday;
-///
-/// // 2024-12-25 is a UK bank holiday (Christmas Day).
-/// assert!(is_holiday(Date::ymd(2024, 12, 25).unwrap()));
-///
-/// // 2024-12-24 is Christmas Eve — not a bank holiday.
-/// assert!(!is_holiday(Date::ymd(2024, 12, 24).unwrap()));
-/// ```
-#[must_use]
-pub fn is_holiday(date: Date) -> bool {
+pub(crate) fn is_holiday(date: Date) -> bool {
     let (min_year, max_year) = COVERAGE;
     let y = date.year();
     if y < min_year || y > max_year {
@@ -575,5 +484,104 @@ mod tests {
         assert!(!is_holiday(Date::ymd(2019, 12, 25).unwrap()));
         // 2041-01-01 is outside the upper end of the window.
         assert!(!is_holiday(Date::ymd(2041, 1, 1).unwrap()));
+    }
+    // Complete primary schedules linked in the module documentation, checked
+    // 2026-10-23. This compares every date, including open days and weekends.
+    // Exact source: https://www.gov.uk/bank-holidays.json, England and Wales.
+    // Download SHA-256: 538b3482c28b85ecd2db606a0d5ae6ad17248900b6498700ce0a48d26a3ecde6.
+    #[test]
+    fn complete_verified_schedules_match_primary_sources() {
+        let expected = &[
+            // 2020
+            (2020, 1, 1),
+            (2020, 4, 10),
+            (2020, 4, 13),
+            (2020, 5, 8),
+            (2020, 5, 25),
+            (2020, 8, 31),
+            (2020, 12, 25),
+            (2020, 12, 28),
+            // 2021
+            (2021, 1, 1),
+            (2021, 4, 2),
+            (2021, 4, 5),
+            (2021, 5, 3),
+            (2021, 5, 31),
+            (2021, 8, 30),
+            (2021, 12, 27),
+            (2021, 12, 28),
+            // 2022
+            (2022, 1, 3),
+            (2022, 4, 15),
+            (2022, 4, 18),
+            (2022, 5, 2),
+            (2022, 6, 2),
+            (2022, 6, 3),
+            (2022, 8, 29),
+            (2022, 9, 19),
+            (2022, 12, 26),
+            (2022, 12, 27),
+            // 2023
+            (2023, 1, 2),
+            (2023, 4, 7),
+            (2023, 4, 10),
+            (2023, 5, 1),
+            (2023, 5, 8),
+            (2023, 5, 29),
+            (2023, 8, 28),
+            (2023, 12, 25),
+            (2023, 12, 26),
+            // 2024
+            (2024, 1, 1),
+            (2024, 3, 29),
+            (2024, 4, 1),
+            (2024, 5, 6),
+            (2024, 5, 27),
+            (2024, 8, 26),
+            (2024, 12, 25),
+            (2024, 12, 26),
+            // 2025
+            (2025, 1, 1),
+            (2025, 4, 18),
+            (2025, 4, 21),
+            (2025, 5, 5),
+            (2025, 5, 26),
+            (2025, 8, 25),
+            (2025, 12, 25),
+            (2025, 12, 26),
+            // 2026
+            (2026, 1, 1),
+            (2026, 4, 3),
+            (2026, 4, 6),
+            (2026, 5, 4),
+            (2026, 5, 25),
+            (2026, 8, 31),
+            (2026, 12, 25),
+            (2026, 12, 28),
+            // 2027
+            (2027, 1, 1),
+            (2027, 3, 26),
+            (2027, 3, 29),
+            (2027, 5, 3),
+            (2027, 5, 31),
+            (2027, 8, 30),
+            (2027, 12, 27),
+            (2027, 12, 28),
+            // 2028
+            (2028, 1, 3),
+            (2028, 4, 14),
+            (2028, 4, 17),
+            (2028, 5, 1),
+            (2028, 5, 29),
+            (2028, 8, 28),
+            (2028, 12, 25),
+            (2028, 12, 26),
+        ];
+        super::super::assert_verified_schedule(
+            super::super::Calendar::UnitedKingdom,
+            2020,
+            2028,
+            expected,
+        );
     }
 }

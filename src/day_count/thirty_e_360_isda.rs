@@ -10,7 +10,7 @@
 //! the **last calendar day of its month** — not merely when it is the
 //! 31st. So a 28 February in a non-leap year, a 29 February in a leap
 //! year, and a 30 April all qualify, where the plain 30E/360 fraction
-//! adjusts only the four 31-day-month endings.
+//! adjusts only the seven 31-day-month endings.
 //!
 //! On top of that, the convention carries one deliberate carve-out: when
 //! the end date is the **maturity date** of the instrument *and* the end
@@ -159,12 +159,7 @@ pub fn fraction(start: Date, end: Date, end_is_maturity: bool) -> f64 {
 mod tests {
     use super::*;
 
-    // The tolerance 1e-12 is the working slack used throughout this crate's
-    // numeric assertions: it is loose enough that a benign last-bit rounding
-    // never causes a spurious failure, and tight enough that any drift large
-    // enough to mis-state a cashflow at the cent level (≥ 1e-9 on a unit
-    // notional) is caught immediately. We deliberately do not assert against
-    // `f64::EPSILON`; the goal is auditable, not maximally-tight.
+    // Absolute year-fraction tolerance for these worked examples.
     const TOL: f64 = 1e-12;
 
     // ─── D1-and-D2 both last-day, neither at maturity ────────────────────
@@ -246,8 +241,8 @@ mod tests {
 
     #[test]
     fn isda_zero_length() {
-        // `fraction(d, d, _)` is identically zero — degenerate but legal.
-        // Holds for both flag values, since the numerator is zero regardless.
+        // A same-day interval outside February has identical adjustments
+        // at both endpoints, including at maturity.
         let d = Date::ymd(2026, 5, 23).unwrap();
         assert!(fraction(d, d, false).abs() < TOL);
         assert!(fraction(d, d, true).abs() < TOL);
@@ -284,5 +279,14 @@ mod tests {
         let f = fraction(start, end, false);
         assert!((f - 45.0_f64 / 360.0).abs() < TOL);
         assert!((f - 0.125).abs() < TOL);
+    }
+
+    #[test]
+    fn equal_february_maturity_retains_endpoint_specific_adjustments() {
+        for (year, day, expected) in [(2024, 29, -1.0 / 360.0), (2025, 28, -2.0 / 360.0)] {
+            let point = Date::ymd(year, 2, day).unwrap();
+            assert!((fraction(point, point, true) - expected).abs() < TOL);
+            assert!(fraction(point, point, false).abs() < TOL);
+        }
     }
 }
