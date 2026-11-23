@@ -110,7 +110,7 @@ jobs:
           cargo doc --no-deps --no-default-features --locked
 
       - name: Deny
-        uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        uses: EmbarkStudios/cargo-deny-action@v2.1.3
 
       - name: Verify publishable archive
         run: cargo package --locked
